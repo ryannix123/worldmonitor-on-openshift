@@ -82,18 +82,33 @@ jobs:
       - name: Fetch upstream at pinned SHA
         run: |
           set -euo pipefail
+          # This repo's files are at $GITHUB_WORKSPACE from actions/checkout.
+          # Anchor to it explicitly so a `cd` never changes what the copy sees.
+          REPO="$GITHUB_WORKSPACE"
+
+          # Fail loudly and early if the build inputs are not where they must
+          # be — a missing Containerfile should say so, not surface later as a
+          # confusing `cp: cannot stat`.
+          for f in containers/Containerfile.ubi10 containers/entrypoint.sh; do
+            [ -f "$REPO/$f" ] || { echo "::error::missing $f in repo checkout"; ls -la "$REPO"; exit 1; }
+          done
+
           git clone --filter=blob:none --no-checkout \
-            "https://github.com/${UPSTREAM_REPO}.git" upstream
-          cd upstream
-          git checkout --detach "${{ needs.resolve.outputs.sha }}"
-          cd ..
-          mkdir -p upstream/containers
-          cp containers/Containerfile.ubi10 containers/entrypoint.sh upstream/containers/
+            "https://github.com/${UPSTREAM_REPO}.git" "$RUNNER_TEMP/upstream"
+          git -C "$RUNNER_TEMP/upstream" checkout --detach "${{ needs.resolve.outputs.sha }}"
+
+          mkdir -p "$RUNNER_TEMP/upstream/containers"
+          cp "$REPO/containers/Containerfile.ubi10" \
+             "$REPO/containers/entrypoint.sh" \
+             "$RUNNER_TEMP/upstream/containers/"
+          # Also carry the SBOM summary helper so later steps at repo root can
+          # find it — those run from $REPO, so nothing to copy, but assert it.
+          [ -f "$REPO/ci/scan-summary.py" ] || echo "::warning::ci/scan-summary.py absent; scan summary will skip"
 
       - name: Build
         id: build
-        working-directory: upstream
         run: |
+          cd "$RUNNER_TEMP/upstream"
           set -euo pipefail
           podman build \
             --platform "linux/${{ matrix.arch }}" \
