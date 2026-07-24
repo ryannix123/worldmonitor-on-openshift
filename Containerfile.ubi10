@@ -1,0 +1,140 @@
+# =============================================================================
+# World Monitor — UBI 10 / Node.js 24
+# =============================================================================
+# Red Hat-based rebuild of the upstream Alpine image, with three changes:
+#
+#   1. UBI 10 + nodejs-24 instead of node:24-alpine. Matches .nvmrc (24) with
+#      no version compromise — ubi10/nodejs-24 is GA.
+#
+#   2. supervisord removed. It existed to babysit two processes; that is a
+#      Python runtime and its whole dependency tree dragged in to run a
+#      15-line shell supervisor. nginx becomes PID 1, the Node sidecar is a
+#      background child, and a signal trap handles shutdown. See entrypoint.sh.
+#
+#   3. OpenShift arbitrary-UID support: chgrp 0 + chmod g=u on every
+#      runtime-writable path, and no `USER <name>` that assumes a fixed UID.
+#
+# What is deliberately UNCHANGED from upstream:
+#
+#   - Single container. nginx and the sidecar share a network namespace and a
+#     per-start random LOCAL_API_TOKEN (see entrypoint.sh). Splitting them into
+#     two pod containers would force that token into a long-lived Secret to let
+#     both sides agree on it — trading an ephemeral per-start secret for a
+#     persistent one in etcd, to gain independent restarts of two processes
+#     that have no independent value. Not worth it.
+#   - Port 8080, temp dirs under /tmp. Upstream already got these right.
+# =============================================================================
+
+ARG NODE_BUILDER=registry.access.redhat.com/ubi10/nodejs-24:latest
+ARG UBI_MINIMAL=registry.access.redhat.com/ubi10/ubi-minimal:latest
+
+# ── Stage 1: Builder ─────────────────────────────────────────────────────────
+FROM ${NODE_BUILDER} AS builder
+
+USER 0
+WORKDIR /build
+
+# The Vite build plus tsc plus two corpus builders are memory-hungry on this
+# repo. 6144 is comfortable; the OpenShift BuildConfig lowers it where the
+# namespace quota is tighter.
+ENV NODE_OPTIONS=--max-old-space-size=6144
+
+COPY package.json package-lock.json ./
+RUN npm ci --ignore-scripts
+
+COPY . .
+
+RUN node docker/build-handlers.mjs
+
+RUN npm run build:crawlable-corpus \
+ && npm run build:content-corpus \
+ && npx tsc \
+ && npx vite build
+
+# ── Stage 2: Runtime dependencies ───────────────────────────────────────────
+FROM ${NODE_BUILDER} AS runtime-deps
+
+USER 0
+WORKDIR /build
+
+# Deliberately smaller than the app's full production graph — the raw
+# api/*.js handlers are not bundled by build-handlers.mjs and still need
+# these imports at runtime, but the frontend/server-only deps do not.
+COPY docker/runtime-package.json ./package.json
+COPY docker/runtime-package-lock.json ./package-lock.json
+RUN npm ci --omit=dev --omit=optional --ignore-scripts
+
+# ── Stage 3: Runtime ─────────────────────────────────────────────────────────
+FROM ${UBI_MINIMAL} AS final
+
+ARG VERSION=dev
+ARG VCS_REF=unknown
+ARG BUILD_DATE=unknown
+
+LABEL org.opencontainers.image.title="World Monitor (UBI 10)" \
+      org.opencontainers.image.description="Real-time global intelligence dashboard on Red Hat UBI 10" \
+      org.opencontainers.image.source="https://github.com/koala73/worldmonitor" \
+      org.opencontainers.image.licenses="AGPL-3.0-only" \
+      org.opencontainers.image.base.name="registry.access.redhat.com/ubi10/ubi-minimal" \
+      org.opencontainers.image.version="${VERSION}" \
+      org.opencontainers.image.revision="${VCS_REF}" \
+      org.opencontainers.image.created="${BUILD_DATE}" \
+      io.openshift.expose-services="8080:http" \
+      io.openshift.tags="worldmonitor,osint,dashboard,nodejs,nginx"
+
+# nodejs24 for the sidecar, nginx for static + proxy, gettext for envsubst
+# (the entrypoint templates LOCAL_API_PORT/LOCAL_API_TOKEN into nginx.conf).
+# shadow-utils is install-only — removed in the same layer so no useradd/groupadd
+# binary ships in the final image.
+RUN microdnf install -y --nodocs --setopt=install_weak_deps=0 \
+      nodejs24 nginx gettext shadow-utils \
+ && alternatives --install /usr/bin/node node /usr/bin/node-24 24 \
+ && alternatives --install /usr/bin/npm npm /usr/bin/npm-24 24 \
+ && useradd -r -u 1001 -g 0 -d /app -s /sbin/nologin worldmonitor \
+ && microdnf remove -y shadow-utils \
+ && microdnf clean all \
+ && rm -rf /var/cache/yum /var/cache/dnf
+
+WORKDIR /app
+
+COPY --from=builder /build/src-tauri/sidecar/local-api-server.mjs ./local-api-server.mjs
+COPY --from=builder /build/src-tauri/sidecar/package.json ./package.json
+COPY --from=runtime-deps /build/node_modules ./node_modules
+COPY --from=builder /build/api ./api
+COPY --from=builder /build/data ./data
+COPY --from=builder /build/dist /usr/share/nginx/html
+
+COPY docker/nginx.conf /etc/nginx/nginx.conf.template
+COPY containers/entrypoint.sh /app/entrypoint.sh
+
+# nginx.conf sets `pid /tmp/nginx.pid` and puts every temp path under /tmp, so
+# the only extra dirs needed are the temp paths themselves.
+RUN mkdir -p /tmp/nginx-client-body /tmp/nginx-proxy /tmp/nginx-fastcgi \
+             /tmp/nginx-uwsgi /tmp/nginx-scgi \
+ && chmod +x /app/entrypoint.sh \
+ && chgrp -R 0 /app /usr/share/nginx/html /etc/nginx \
+      /tmp/nginx-client-body /tmp/nginx-proxy /tmp/nginx-fastcgi \
+      /tmp/nginx-uwsgi /tmp/nginx-scgi /var/log/nginx /var/lib/nginx \
+ && chmod -R g=u /app /usr/share/nginx/html /etc/nginx \
+      /tmp/nginx-client-body /tmp/nginx-proxy /tmp/nginx-fastcgi \
+      /tmp/nginx-uwsgi /tmp/nginx-scgi /var/log/nginx /var/lib/nginx
+
+# Numeric UID, not a name: OpenShift assigns an arbitrary UID anyway, and a
+# numeric value here satisfies `runAsNonRoot` without a lookup.
+USER 1001
+
+EXPOSE 8080
+
+# /api/sidecar-health is an auth-exempt liveness route in local-api-server.mjs.
+# Reaching it THROUGH nginx proves both processes are up, which a static "/"
+# probe would not. 127.0.0.1 rather than localhost — the latter resolves ::1
+# first, where nginx does not listen.
+#
+# Probed with node rather than curl/wget: node is guaranteed present (it runs
+# the sidecar), whereas ubi-minimal ships curl-minimal whose feature set is
+# reduced and wget not at all. One less package and one less assumption.
+# In OpenShift the Deployment's httpGet probes supersede this anyway.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=45s --retries=3 \
+  CMD ["/usr/bin/node", "-e", "fetch('http://127.0.0.1:8080/api/sidecar-health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+
+ENTRYPOINT ["/app/entrypoint.sh"]
