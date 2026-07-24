@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # =============================================================================
-# World Monitor — SNO deployment
+# World Monitor — deploy / teardown
 # =============================================================================
-# Generates secrets, applies the SNO overlay, triggers both builds, and waits.
-# Idempotent — re-running will not clobber existing secrets.
+# Default: generate secrets, apply the overlay, build if needed, wait.
+# With -d: tear down everything the overlay created (see --keep-secrets).
+# Idempotent — re-running deploy will not clobber existing secrets.
 # =============================================================================
 set -euo pipefail
 
@@ -16,6 +17,12 @@ Usage: ./deploy.sh [options]
   -E KEY           Read the value for KEY from stdin (prompt, no echo).
                    Safer than -e: nothing lands in shell history or `ps`.
   -o OVERLAY       Overlay path (default: overlays/sno).
+  -d               Delete (tear down) what the overlay created, then exit.
+                   Prompts for confirmation unless --yes is given.
+      --keep-secrets   With -d, keep the generated secrets (Redis creds, relay
+                       secret, API keys). Recommended — regenerating Redis
+                       credentials causes a password mismatch on next deploy.
+      --yes            Skip the confirmation prompt (for scripted teardown).
   -h               This help.
 
 Environment:
@@ -31,12 +38,28 @@ Notes on -e:
 Examples:
   ./deploy.sh -o overlays/sandbox -E OPENROUTER_API_KEY
   ./deploy.sh -o overlays/sandbox -e OPENROUTER_API_KEY=sk-or-v1-...
+  ./deploy.sh -o overlays/sandbox-quay -d --keep-secrets   # tear down, keep creds
+  ./deploy.sh -o overlays/sandbox-quay -d --yes            # tear down everything
 USAGE
 }
 
 declare -a CLI_KEYS=()
+DO_DELETE=false
+KEEP_SECRETS=false
+ASSUME_YES=false
 
-while getopts ":e:E:o:h" opt; do
+# getopts handles only short options; pull the long ones out of argv first.
+declare -a ARGV=()
+for a in "$@"; do
+  case "$a" in
+    --keep-secrets) KEEP_SECRETS=true ;;
+    --yes)          ASSUME_YES=true ;;
+    *)              ARGV+=("$a") ;;
+  esac
+done
+set -- "${ARGV[@]}"
+
+while getopts ":e:E:o:dh" opt; do
   case "$opt" in
     e)
       [[ "$OPTARG" == *=* ]] || { echo "-e expects KEY=VALUE, got: $OPTARG"; exit 1; }
@@ -65,6 +88,7 @@ while getopts ":e:E:o:h" opt; do
       unset _val
       ;;
     o) OVERLAY="$OPTARG" ;;
+    d) DO_DELETE=true ;;
     h) usage; exit 0 ;;
     \?) echo "Unknown option: -$OPTARG"; usage; exit 1 ;;
     :) echo "-$OPTARG requires an argument"; usage; exit 1 ;;
@@ -85,6 +109,61 @@ oc whoami >/dev/null || { echo "Not logged in. Run: oc login ..."; exit 1; }
 
 NS="$(oc project -q)"
 [[ -d "$OVERLAY" ]] || { echo "No such overlay: $OVERLAY"; exit 1; }
+
+# --- Teardown (-d) -----------------------------------------------------------
+if [[ "$DO_DELETE" == true ]]; then
+  echo "About to delete everything the overlay '$OVERLAY' created in namespace"
+  echo "'$NS':"
+  echo
+  # Show exactly what will go. `oc delete -k --dry-run` lists the targeted
+  # objects without touching them — no surprises.
+  oc delete -k "$OVERLAY" --dry-run=client 2>/dev/null \
+    | sed 's/^/  would delete: /' || true
+  echo
+
+  if [[ "$KEEP_SECRETS" == true ]]; then
+    echo "Secrets will be KEPT (--keep-secrets)."
+  else
+    echo "Secrets WILL be deleted. Re-deploying will generate NEW Redis"
+    echo "credentials — fine for a fresh start, but any kept PVC data becomes"
+    echo "unreadable. Use --keep-secrets to avoid this."
+  fi
+  echo
+
+  if [[ "$ASSUME_YES" != true ]]; then
+    if { : > /dev/tty; } 2>/dev/null; then
+      printf 'Type the namespace name (%s) to confirm: ' "$NS" > /dev/tty
+      IFS= read -r _confirm < /dev/tty
+    else
+      IFS= read -r _confirm || true
+    fi
+    [[ "${_confirm:-}" == "$NS" ]] || { echo "Confirmation did not match. Aborted."; exit 1; }
+    unset _confirm
+  fi
+
+  # `oc delete -k` removes only the objects the kustomization declares — not
+  # other things sharing the namespace. Secrets are generated objects, so they
+  # are part of that set; to keep them, delete everything else by label instead.
+  if [[ "$KEEP_SECRETS" == true ]]; then
+    # secretGenerator output does NOT carry the base's part-of label (the label
+    # transformer runs on base resources, not overlay-generated ones), so a
+    # label-scoped delete of everything-but-secrets naturally leaves them alone.
+    # Delete each concrete kind the overlay creates, excluding Secret.
+    oc delete deployment,service,route,configmap,pvc,networkpolicy \
+      -l app.kubernetes.io/part-of=worldmonitor -n "$NS" --ignore-not-found
+    KEPT="$(oc get secret worldmonitor-redis worldmonitor-relay worldmonitor-apikeys \
+             -n "$NS" -o name 2>/dev/null | wc -l | tr -d ' ')"
+    echo "Kept ${KEPT} secret(s)."
+  else
+    oc delete -k "$OVERLAY" --ignore-not-found
+  fi
+
+  echo
+  echo "Teardown complete. Remaining worldmonitor objects (should be empty or"
+  echo "secrets-only):"
+  oc get all,pvc,secret,configmap -l app.kubernetes.io/part-of=worldmonitor -n "$NS" 2>/dev/null || true
+  exit 0
+fi
 
 # --- Secrets -----------------------------------------------------------------
 mkdir -p "$SECRETS"
