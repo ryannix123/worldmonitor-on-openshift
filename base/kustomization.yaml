@@ -1,0 +1,15 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - configmap.yaml
+  - redis.yaml
+  - redis-rest.yaml
+  - ais-relay.yaml
+  - worldmonitor.yaml
+  - networkpolicy.yaml
+
+labels:
+  - includeSelectors: false
+    pairs:
+      app.kubernetes.io/part-of: worldmonitor

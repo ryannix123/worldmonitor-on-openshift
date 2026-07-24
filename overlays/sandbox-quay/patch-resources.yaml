@@ -1,0 +1,80 @@
+---
+# Same Sandbox resource envelope as the build-based overlay, minus everything
+# related to in-cluster building. See ../sandbox/patch-resources.yaml for the
+# rationale on each number.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: worldmonitor
+spec:
+  template:
+    spec:
+      containers:
+        - name: worldmonitor
+          resources:
+            requests:
+              cpu: 100m
+              memory: 384Mi
+            limits:
+              cpu: 500m
+              memory: 1Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis
+spec:
+  template:
+    spec:
+      containers:
+        - name: redis
+          args:
+            - redis-server
+            - --requirepass
+            - $(REDIS_PASSWORD)
+            - --maxmemory
+            - 96mb
+            - --maxmemory-policy
+            - allkeys-lru
+            - --dir
+            - /data
+          resources:
+            requests:
+              cpu: 25m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 160Mi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis-rest
+spec:
+  template:
+    spec:
+      containers:
+        - name: srh
+          resources:
+            requests:
+              cpu: 25m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 160Mi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ais-relay
+spec:
+  replicas: 0
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: redis-data
+spec:
+  resources:
+    requests:
+      storage: 1Gi

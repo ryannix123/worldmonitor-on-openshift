@@ -1,0 +1,252 @@
+#!/usr/bin/env bash
+# =============================================================================
+# World Monitor — SNO deployment
+# =============================================================================
+# Generates secrets, applies the SNO overlay, triggers both builds, and waits.
+# Idempotent — re-running will not clobber existing secrets.
+# =============================================================================
+set -euo pipefail
+
+usage() {
+  cat <<'USAGE'
+Usage: ./deploy.sh [options]
+
+  -e KEY=VALUE     Set an API key. Repeatable.
+                   e.g. -e OPENROUTER_API_KEY=sk-or-v1-... -e GROQ_API_KEY=gsk_...
+  -E KEY           Read the value for KEY from stdin (prompt, no echo).
+                   Safer than -e: nothing lands in shell history or `ps`.
+  -o OVERLAY       Overlay path (default: overlays/sno).
+  -h               This help.
+
+Environment:
+  OVERLAY          Same as -o.
+  MODEL            Ollama model to pull on SNO (default: llama3.2:3b).
+
+Notes on -e:
+  A value passed with -e is visible in your shell history and in `ps` output
+  while the script runs. For a personal homelab that is usually fine. For a
+  shared box or a screen-shared demo, prefer -E, or prefix the command with a
+  space if your shell has HISTCONTROL=ignorespace.
+
+Examples:
+  ./deploy.sh -o overlays/sandbox -E OPENROUTER_API_KEY
+  ./deploy.sh -o overlays/sandbox -e OPENROUTER_API_KEY=sk-or-v1-...
+USAGE
+}
+
+declare -a CLI_KEYS=()
+
+while getopts ":e:E:o:h" opt; do
+  case "$opt" in
+    e)
+      [[ "$OPTARG" == *=* ]] || { echo "-e expects KEY=VALUE, got: $OPTARG"; exit 1; }
+      CLI_KEYS+=("$OPTARG")
+      ;;
+    E)
+      [[ "$OPTARG" == *=* ]] && { echo "-E expects just KEY (no =VALUE)"; exit 1; }
+      # Prefer /dev/tty so the prompt works even when the script is piped.
+      # With no controlling terminal (CI, `sh deploy.sh < /dev/null`) fall back
+      # to plain stdin so this degrades to a readable error instead of a crash.
+      # `[[ -r /dev/tty ]]` is true even where opening it fails (containers with
+      # no controlling terminal), so probe with an actual write.
+      if { : > /dev/tty; } 2>/dev/null; then
+        printf 'Value for %s: ' "$OPTARG" > /dev/tty
+        IFS= read -rs _val < /dev/tty
+        printf '\n' > /dev/tty
+      else
+        IFS= read -rs _val || true
+      fi
+      [[ -n "${_val:-}" ]] || {
+        echo "No value read for $OPTARG. With no terminal available, pipe it in:"
+        echo "  echo 'sk-or-v1-...' | ./deploy.sh -E $OPTARG"
+        exit 1
+      }
+      CLI_KEYS+=("${OPTARG}=${_val}")
+      unset _val
+      ;;
+    o) OVERLAY="$OPTARG" ;;
+    h) usage; exit 0 ;;
+    \?) echo "Unknown option: -$OPTARG"; usage; exit 1 ;;
+    :) echo "-$OPTARG requires an argument"; usage; exit 1 ;;
+  esac
+done
+shift $((OPTIND - 1))
+
+# Overlay selects the target profile. Namespace is whatever `oc` is already
+# pointed at — nothing here creates or switches namespaces, so this works
+# identically on a self-managed cluster and on Developer Sandbox.
+OVERLAY="${OVERLAY:-overlays/sno}"
+SECRETS="${OVERLAY}/secrets"
+
+info() { printf '\033[1;32m==>\033[0m %s\n' "$1"; }
+
+command -v oc >/dev/null || { echo "oc not found in PATH"; exit 1; }
+oc whoami >/dev/null || { echo "Not logged in. Run: oc login ..."; exit 1; }
+
+NS="$(oc project -q)"
+[[ -d "$OVERLAY" ]] || { echo "No such overlay: $OVERLAY"; exit 1; }
+
+# --- Secrets -----------------------------------------------------------------
+mkdir -p "$SECRETS"
+
+if [[ -f "${SECRETS}/redis.env" ]] && ! grep -q REPLACE_ME "${SECRETS}/redis.env"; then
+  info "Redis secrets already generated"
+else
+  info "Generating Redis secrets"
+  RP="$(openssl rand -hex 32)"
+  RT="$(openssl rand -hex 32)"
+  cat > "${SECRETS}/redis.env" <<EOF
+REDIS_PASSWORD=${RP}
+REDIS_TOKEN=${RT}
+SRH_CONNECTION_STRING=redis://:${RP}@redis:6379
+EOF
+fi
+
+if [[ -f "${SECRETS}/relay.env" ]] && ! grep -q REPLACE_ME "${SECRETS}/relay.env"; then
+  info "Relay secret already generated"
+else
+  info "Generating relay shared secret"
+  echo "RELAY_SHARED_SECRET=$(openssl rand -hex 32)" > "${SECRETS}/relay.env"
+fi
+
+# Provider keys are optional — every feature degrades gracefully without them.
+[[ -f "${SECRETS}/apikeys.env" ]] || cat > "${SECRETS}/apikeys.env" <<'EOF'
+# Optional. Each key enables one feature; the dashboard runs without any of them.
+GROQ_API_KEY=
+FINNHUB_API_KEY=
+FRED_API_KEY=
+EIA_API_KEY=
+NASA_FIRMS_API_KEY=
+AISSTREAM_API_KEY=
+ACLED_EMAIL=
+ACLED_PASSWORD=
+EOF
+
+# Merge any -e / -E keys into apikeys.env. Existing keys are replaced in place
+# rather than appended, so the file stays readable after repeated runs.
+# Values are passed to python via argv, never interpolated into a shell string —
+# an API key containing /, &, quotes, or spaces is handled correctly.
+if (( ${#CLI_KEYS[@]} > 0 )); then
+  for kv in "${CLI_KEYS[@]}"; do
+    python3 - "${kv%%=*}" "${kv#*=}" "${SECRETS}/apikeys.env" <<'PY'
+import os, re, sys
+key, val, path = sys.argv[1], sys.argv[2], sys.argv[3]
+lines = open(path).read().splitlines() if os.path.exists(path) else []
+pat = re.compile(rf"^{re.escape(key)}=")
+if any(pat.match(ln) for ln in lines):
+    lines = [f"{key}={val}" if pat.match(ln) else ln for ln in lines]
+else:
+    lines.append(f"{key}={val}")
+open(path, "w").write("\n".join(lines) + "\n")
+PY
+    info "Set ${kv%%=*}"
+  done
+  unset CLI_KEYS kv
+fi
+
+chmod 600 "${SECRETS}"/*.env
+
+info "Deploying into namespace: $NS"
+
+# --- Preflight: PVC size conflicts -------------------------------------------
+# PVC storage requests are immutable downward. Switching from the SNO overlay
+# (2Gi) to the sandbox overlay (1Gi) makes `oc apply` fail with:
+#   spec.resources.requests.storage: Forbidden: field can not be less than
+#   status.capacity
+# Detect it and say what to do rather than letting the apply die mid-way.
+WANT="$(${KUSTOMIZE:-oc kustomize} "$OVERLAY" 2>/dev/null \
+  | awk '/^kind: PersistentVolumeClaim/{p=1} p&&/name: redis-data/{f=1} f&&/storage:/{print $2; exit}')"
+HAVE="$(oc get pvc redis-data -o jsonpath='{.status.capacity.storage}' 2>/dev/null || true)"
+
+if [[ -n "$HAVE" && -n "$WANT" && "$HAVE" != "$WANT" ]]; then
+  # Compare as bytes so 1Gi vs 1024Mi does not read as a conflict.
+  to_bytes() { python3 -c "
+import sys,re
+v=sys.argv[1]; m=re.match(r'^(\d+)([EPTGMK]i?)?$',v)
+u={'Ki':1024,'Mi':1024**2,'Gi':1024**3,'Ti':1024**4,'K':1000,'M':1000**2,'G':1000**3,'T':1000**4}
+print(int(m.group(1))*u.get(m.group(2) or '',1))" "$1"; }
+  if (( $(to_bytes "$WANT") < $(to_bytes "$HAVE") )); then
+    cat >&2 <<MSG
+
+  PVC size conflict: redis-data exists at ${HAVE}, this overlay wants ${WANT}.
+  Kubernetes cannot shrink a bound PVC, so the apply would fail.
+
+  Redis is a cache here — nothing is lost by recreating it:
+
+      oc delete deploy/redis --ignore-not-found
+      oc delete pvc redis-data
+      $0 $*
+
+  Or keep the existing volume by removing the PersistentVolumeClaim block
+  from ${OVERLAY}/patch-resources.yaml.
+
+MSG
+    exit 1
+  fi
+fi
+
+# --- Apply -------------------------------------------------------------------
+info "Applying manifests"
+oc apply -k "$OVERLAY"
+
+# --- Build -------------------------------------------------------------------
+# The frontend build is the long pole: npm ci on the full graph, then
+# build-handlers, two corpus builders, tsc, and Vite. Expect 15-25 min on SNO.
+# Builds run sequentially when the namespace is tight on CPU — two concurrent
+# builds will simply queue, and the parallel form makes failures harder to read.
+# A re-run while an earlier build is still going leaves redundant builds queued
+# behind it, each rebuilding the same commit. Cancel them first.
+RUNNING="$(oc get builds -o jsonpath='{range .items[?(@.status.phase=="Running")]}{.metadata.name}{"\n"}{end}' 2>/dev/null || true)"
+PENDING="$(oc get builds -o jsonpath='{range .items[?(@.status.phase=="New")]}{.metadata.name}{"\n"}{end}' 2>/dev/null || true)"
+STALE="$(printf '%s\n%s\n' "$RUNNING" "$PENDING" | grep -v '^$' || true)"
+if [[ -n "$STALE" ]]; then
+  info "Cancelling in-flight builds: $(echo $STALE | tr '\n' ' ')"
+  # shellcheck disable=SC2086
+  oc cancel-build $STALE >/dev/null 2>&1 || true
+fi
+
+# Overlays that deploy a prebuilt image (e.g. sandbox-quay) have no
+# BuildConfig. Only build when one exists; otherwise the deployment just pulls
+# from the external registry.
+if oc -n "$NS" get bc/worldmonitor >/dev/null 2>&1; then
+  info "Starting app build (this takes a while — the Vite build is heavy)"
+  oc -n "$NS" start-build worldmonitor --wait \
+    || { echo "App build failed. Logs: oc -n $NS logs -f bc/worldmonitor"; exit 1; }
+else
+  info "No BuildConfig — using prebuilt image from the registry"
+fi
+
+if oc -n "$NS" get bc/worldmonitor-ais-relay >/dev/null 2>&1 \
+   && [[ "$(oc -n "$NS" get deploy/ais-relay -o jsonpath='{.spec.replicas}' 2>/dev/null)" != "0" ]]; then
+  info "Starting relay build"
+  oc -n "$NS" start-build worldmonitor-ais-relay --wait \
+    || { echo "Relay build failed. Logs: oc -n $NS logs -f bc/worldmonitor-ais-relay"; exit 1; }
+else
+  info "Skipping relay build (relay scaled to 0)"
+fi
+
+# --- Wait --------------------------------------------------------------------
+info "Waiting for rollouts"
+for d in redis redis-rest ollama ais-relay worldmonitor; do
+  oc -n "$NS" get "deploy/$d" >/dev/null 2>&1 || continue
+  # A deployment scaled to 0 (ais-relay in the sandbox overlay) never reports
+  # a completed rollout, so treat it as done.
+  if [[ "$(oc -n "$NS" get deploy/"$d" -o jsonpath='{.spec.replicas}')" == "0" ]]; then
+    info "Skipping $d (scaled to 0)"
+    continue
+  fi
+  oc -n "$NS" rollout status "deploy/$d" --timeout=15m
+done
+
+ROUTE="$(oc -n "$NS" get route worldmonitor -o jsonpath='{.spec.host}')"
+info "Deployed: https://${ROUTE}"
+
+# --- Pull a model (SNO overlay only) -----------------------------------------
+if oc -n "$NS" get deploy/ollama >/dev/null 2>&1; then
+  MODEL="${MODEL:-llama3.2:3b}"
+  info "Pulling ${MODEL} into Ollama"
+  OLLAMA_POD="$(oc -n "$NS" get pod -l app.kubernetes.io/name=ollama -o name | head -1)"
+  oc -n "$NS" exec "$OLLAMA_POD" -- ollama pull "$MODEL"
+fi
+
+info "Done."

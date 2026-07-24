@@ -1,0 +1,60 @@
+---
+# OpenRouter → Anthropic wiring.
+#
+# The code has no Anthropic provider branch (server/_shared/llm.ts:
+# getProviderCredentials handles ollama | groq | openrouter | generic only),
+# and `generic` sends an OpenAI-shaped body with a Bearer header, which the
+# Anthropic Messages API does not accept. OpenRouter is therefore the supported
+# route to Claude, and the codebase is already built around it.
+#
+# IMPORTANT: these *_PROVIDER vars take a SINGLE provider name, not a list.
+# callLlmProfile() reads one name and then appends the remaining providers from
+# the built-in chain ['ollama','openrouter','groq','generic'] automatically.
+# An unrecognized value logs a warning and silently uses the profile default.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: worldmonitor-config
+data:
+  # --- Reasoning profile (synthesis, briefs, chat analyst) ------------------
+  # Default provider is already openrouter; set explicitly for clarity.
+  LLM_REASONING_PROVIDER: "openrouter"
+  # Reasoning is ON for this profile (callLlmReasoning passes enableReasoning:
+  # true, which omits the `reasoning: {enabled:false}` OpenRouter override).
+  #
+  # Do NOT put an extended-thinking Claude model here. Short-output stages pass
+  # a small max_tokens; a thinking model spends that budget on hidden reasoning
+  # tokens, returns empty content, and the chain silently falls through to Groq.
+  # The upstream code carries this exact warning for deepseek-v4-pro (#4983).
+  LLM_REASONING_MODEL: "anthropic/claude-sonnet-4.5"
+
+  # --- Tool profile (cheap extraction / parsing) ----------------------------
+  # Defaults to groq. Reasoning is forced off here, so a small fast model is
+  # the right call — this profile runs on high-volume parsing, not synthesis.
+  LLM_TOOL_PROVIDER: "openrouter"
+  LLM_TOOL_MODEL: "anthropic/claude-haiku-4.5"
+
+  # --- Forecast stage routing -----------------------------------------------
+  # Separate knob set consumed by the forecast seeder. Precedence per
+  # .env.example: combined-stage -> critical-signal -> global -> built-in.
+  # Start with the global override only; add stage overrides once you have
+  # cost data.
+  FORECAST_LLM_PROVIDER_ORDER: "openrouter"
+  FORECAST_LLM_MODEL_OPENROUTER: "anthropic/claude-haiku-4.5"
+
+  # --- Cost containment -----------------------------------------------------
+  # This app has hard spend ceilings for AviationStack (MONTHLY_BUDGET /
+  # REQUEST_BUDGET) but NO equivalent for LLM calls. The seeders run on cron
+  # across 500+ feeds and 31 Tier-1 countries. Keep the fan-out pipelines off
+  # until you have measured real request volume against your credit balance.
+  AI_DIGEST_ENABLED: ""
+  DIGEST_CRON_ENABLED: ""
+  BRIEF_COMPOSE_ENABLED: ""
+  BRIEF_LLM_ENABLED: ""
+  AI_IMPACT_ENABLED: ""
+
+  # Emits one llm_call event per logical call with provider, model, stage,
+  # duration, token counts, and fallbackIndex. This is how you find out which
+  # stage is actually spending your credits, and whether Claude calls are
+  # succeeding or silently falling back to Groq.
+  USAGE_TELEMETRY: "1"

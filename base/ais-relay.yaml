@@ -1,0 +1,102 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ais-relay
+  labels:
+    app.kubernetes.io/name: ais-relay
+    app.kubernetes.io/component: relay
+    app.kubernetes.io/part-of: worldmonitor
+  annotations:
+    # See the note in worldmonitor.yaml — bare ImageStream tags do not resolve
+    # for Deployments; the trigger controller rewrites this field instead.
+    image.openshift.io/triggers: >-
+      [{"from":{"kind":"ImageStreamTag","name":"worldmonitor-ais-relay:latest"},
+        "fieldPath":"spec.template.spec.containers[?(@.name==\"relay\")].image",
+        "pause":"false"}]
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: ais-relay
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: ais-relay
+        app.kubernetes.io/component: relay
+        app.kubernetes.io/part-of: worldmonitor
+    spec:
+      containers:
+        - name: relay
+          # Overwritten by the image.openshift.io/triggers annotation above.
+          image: image-registry.openshift-image-registry.svc:5000/openshift/worldmonitor-ais-relay:latest
+          ports:
+            - name: http
+              containerPort: 3004
+          envFrom:
+            - configMapRef:
+                name: worldmonitor-config
+            - secretRef:
+                name: worldmonitor-apikeys
+                optional: true
+          env:
+            - name: PORT
+              value: "3004"
+            - name: UPSTASH_REDIS_REST_URL
+              value: "http://redis-rest"
+            - name: UPSTASH_REDIS_REST_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: worldmonitor-redis
+                  key: REDIS_TOKEN
+            - name: UPSTASH_ALLOW_INSECURE_HTTP
+              value: "true"
+            # The relay refuses to start without a shared secret unless the
+            # dev escape hatch is set. RELAY_SHARED_SECRET lives in the
+            # worldmonitor-relay secret; see overlays for generation.
+            - name: RELAY_SHARED_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: worldmonitor-relay
+                  key: RELAY_SHARED_SECRET
+            - name: RELAY_AUTH_HEADER
+              value: "x-relay-key"
+          readinessProbe:
+            tcpSocket:
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket:
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 30
+          resources:
+            requests:
+              cpu: 100m
+              memory: 384Mi
+            limits:
+              cpu: "1"
+              memory: 1536Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            capabilities:
+              drop: ["ALL"]
+            seccompProfile:
+              type: RuntimeDefault
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ais-relay
+  labels:
+    app.kubernetes.io/name: ais-relay
+    app.kubernetes.io/part-of: worldmonitor
+spec:
+  selector:
+    app.kubernetes.io/name: ais-relay
+  ports:
+    - name: http
+      port: 3004
+      targetPort: http

@@ -1,150 +1,117 @@
-# World Monitor — Red Hat UBI 10 image + nightly CI
+# World Monitor on OpenShift
 
-Rebuild of [koala73/worldmonitor](https://github.com/koala73/worldmonitor) on
-Red Hat UBI 10, with a nightly multi-arch pipeline pushing to
-`quay.io/ryan_nix/worldmonitor-openshift`.
+A Red Hat–based container build and OpenShift deployment for
+[koala73/worldmonitor](https://github.com/koala73/worldmonitor) — a real-time
+global intelligence dashboard. This repo does two things:
 
-## What changed from upstream
+1. **Builds** a UBI 10 image nightly and publishes it to Quay, with SBOM and
+   vulnerability scanning.
+2. **Deploys** it to OpenShift (Developer Sandbox or Single Node OpenShift) via
+   Kustomize overlays.
 
-| | Upstream | Here |
-|---|---|---|
-| Base | `node:24-alpine` | `ubi10/ubi-minimal` + `nodejs24` |
-| Builder | `node:24-alpine` | `ubi10/nodejs-24` |
-| Process supervisor | supervisord (Python) | shell, nginx + sidecar as children |
-| Arbitrary UID | `USER appuser`, breaks under `restricted-v2` | `chgrp 0` + `chmod g=u`, `USER 1001` |
-| Arch | amd64 | amd64 + arm64 manifest list |
-| SBOM / scan | none | Syft SPDX + Grype, 90-day artifacts |
+The upstream app runs the same feed-aggregation engine everywhere; this repo
+repackages it on Red Hat's supported base images and wires it for a
+`restricted-v2` cluster.
 
-`.nvmrc` says Node 24 and `ubi10/nodejs-24` is GA, so there was no version
-compromise to make.
+## Layout
 
-## Why it stays a single container
+```
+.github/workflows/   Nightly multi-arch build + weekly upstream-sync PR
+ci/                  Scan-summary helper for the build
+containers/          Containerfile.ubi10 + entrypoint (the image)
+upstream.env         Pinned upstream commit SHA
 
-The strong temptation is to split nginx and the Node sidecar into two
-containers in one pod — that is the OpenShift-native shape and it removes the
-need for any in-container supervision. I started there and backed out.
-
-`docker/nginx.conf` proxies `/api/` to the sidecar like this:
-
-```nginx
-proxy_pass http://127.0.0.1:${LOCAL_API_PORT};
-proxy_set_header Authorization "Bearer ${LOCAL_API_TOKEN}";
+base/                Kustomize base: 4 Deployments, Route, NetworkPolicy
+addons/builds/       BuildConfigs + ImageStreams (in-cluster build path only)
+overlays/
+  sandbox/           Developer Sandbox, builds in-cluster
+  sandbox-quay/      Developer Sandbox, pulls the prebuilt Quay image
+  sno/               Single Node OpenShift, GPU Ollama for local LLM
+deploy.sh            One-shot deploy: ./deploy.sh -o <overlay> -E OPENROUTER_API_KEY
+podman/              Apple Silicon local-run path
 ```
 
-and `entrypoint.sh` generates `LOCAL_API_TOKEN` fresh on every start. The
-sidecar binds loopback and trusts that bearer token — it is the trust boundary
-between the two processes, and it never outlives the container.
+## Two ways to get the image onto a cluster
 
-Two containers in a pod still share a network namespace, so `127.0.0.1` keeps
-working. But they could no longer agree on a token generated at start, so it
-would have to become a Secret: long-lived, in etcd, readable by anyone with
-`get secrets` in the namespace. That trades an ephemeral per-start secret for a
-persistent one, to gain independent restarts of two processes that have no
-independent value. The upstream design is better here.
+**Prebuilt from Quay (recommended for demos).** CI has already built it; the
+overlay just pulls it. Fastest, and the same artifact every time.
 
-## Why not supervisord, s6, or tini
+```bash
+oc login --token=... --server=https://api.sandbox-....openshiftapps.com:6443
+./deploy.sh -o overlays/sandbox-quay -E OPENROUTER_API_KEY
+```
 
-supervisord is a Python runtime and its dependency tree, present to watch two
-processes. s6-overlay works under `restricted-v2` (with `S6_READ_ONLY_ROOT=1`,
-no `fix-attrs.d`, and group-writable scratch dirs prepared at build time) but
-it is still a component added to preserve a design that does not need it.
+**Build in-cluster.** No external registry needed; OpenShift builds from source
+in ~5 minutes. Useful on SNO or when you want everything self-contained.
 
-`containers/entrypoint.sh` does the job in shell:
+```bash
+./deploy.sh -o overlays/sandbox -E OPENROUTER_API_KEY   # or overlays/sno
+```
 
-- sidecar starts as a background child, with a bounded wait for it to listen
-- nginx starts as a second child
-- `wait -n` returns on whichever exits first, and the container exits with it
-- SIGTERM is forwarded to both, with a bounded wait then SIGKILL
+`-E` prompts for the key without echoing. Use `-e KEY=VALUE` for the inline
+form, or omit both to deploy without AI features. See `overlays/*/README.md` for
+per-target detail.
 
-### One thing worth knowing
+## The image
 
-The obvious form is `exec nginx -g 'daemon off;'` so nginx becomes PID 1.
-**That silently breaks shutdown.** `exec` replaces the shell and discards the
-trap with it, so SIGTERM reaches nginx but never the sidecar — which is then
-orphaned and only dies via SIGKILL at the end of the grace period. Every
-`oc delete pod` costs 30 seconds and an unclean shutdown.
+`containers/Containerfile.ubi10` rebuilds upstream's Alpine image on
+`ubi10/ubi-minimal` + `nodejs24`, replaces supervisord with a shell entrypoint,
+and supports OpenShift's arbitrary UID. `.nvmrc` pins Node 24 and `ubi10/nodejs-24`
+is GA, so there was no version compromise.
 
-This was verified experimentally rather than assumed, and it is why the shell
-stays PID 1 and both processes are backgrounded children. Cost: one extra
-process. Benefit: correct signal forwarding and reaping.
+It stays a **single container** deliberately: nginx and the Node sidecar share a
+per-start random `LOCAL_API_TOKEN`, and splitting them would force that into a
+long-lived Secret. See `containers/` and the note in the CI section below.
 
-## Upstream pinning
+### Why no supervisord / s6 / tini
 
-`upstream.env` pins a commit SHA. Upstream's last tag is ~5 months old while
-commits land daily — they ship from `main` and stopped tagging, so `v2.5.23`
-is a stale marker rather than a release you would choose.
+Two processes, one of which exists only to serve static files and proxy `/api/`.
+The entrypoint runs them as shell-managed children: `wait -n` exits with
+whichever dies first, SIGTERM is forwarded to both. Note that `exec nginx` as
+PID 1 was tried and rejected — it discards the trap and orphans the sidecar on
+shutdown. The shell stays PID 1 for correct signal handling.
 
-Building `main` nightly means debugging someone else's work in progress.
-Freezing on the old tag means no fixes and growing CVE drift. Pinning a tested
-SHA with a weekly bump PR gives reproducible builds plus a reviewed upgrade
-path.
+## CI
 
-`upstream-sync.yml` opens that PR every Monday and flags any changes to
-`package.json`, `.nvmrc`, `docker/`, `vite.config.ts`, or `tsconfig` — the
-files that actually break a rebuild.
+Nightly at 07:00 UTC (02:00 CDT), plus on push and manual dispatch:
 
-## On the CVE story
+- Resolves one upstream SHA for the whole run, so amd64 and arm64 build
+  identical source
+- Builds both arches, smoke-tests amd64 (health endpoint, SPA fallback,
+  non-root UID), assembles a manifest list
+- Syft SBOM + Grype scan, `--fail-on critical` only, results in the run summary
+- Pushes `<sha>` and `latest` to `quay.io/ryan_nix/worldmonitor-openshift`
 
-If this becomes customer-facing material, the honest framing is **"eliminated
-the OS-package attack surface"**, not "zero CVEs."
+`upstream-sync.yml` opens a bump PR every Monday, since upstream ships from
+`main` and stopped tagging ~5 months ago. It flags changes to build-relevant
+files so a bump is reviewed, not blindly merged.
 
-Grype and Clair scan OS packages. This app's npm dependency graph is enormous —
-the full deck.gl/three.js stack, 281 protos, 65+ data provider integrations. A
-clean scan on the UBI base says nothing about that tree. The pipeline runs
-`--fail-on critical` only, deliberately: UBI carries Low/Medium findings Red Hat
-has triaged as not-affected, and failing on those makes the pipeline
-permanently red, which means nobody reads it.
-
-Add `npm audit --production` to the build if you want a defensible claim about
-application dependencies.
-
-## CI secrets
+### CI secrets
 
 | Secret | Purpose |
 |---|---|
 | `QUAY_USERNAME` | Quay robot account, e.g. `ryan_nix+worldmonitor_ci` |
-| `QUAY_PASSWORD` | That robot's token |
+| `QUAY_PASSWORD` | That robot's token (needs Write on the repo) |
 
-Use a robot account scoped to the one repository, not your personal
-credentials. The robot needs **Write** on
-`ryan_nix/worldmonitor-openshift` — Read is not enough to push, and Admin is
-more than a CI job should hold.
+## Wiring Claude
 
-Quay repos default to **private**. If you want OpenShift to pull without a
-pull secret, flip it to public under Repository Settings, or add the robot's
-credentials as a pull secret in the namespace:
+The app has no Anthropic provider — its LLM layer speaks OpenAI-compatible,
+`groq`, `openrouter`, or `ollama`. OpenRouter is the route to Claude, and the
+overlays set the model routing. Before relying on it, run
+`scripts/verify-openrouter.sh` (in the deploy bundle) to confirm the app's
+forced provider-routing constant doesn't exclude Anthropic models. See any
+overlay's notes for the profile/model detail.
 
-```bash
-oc create secret docker-registry quay-pull \
-  --docker-server=quay.io \
-  --docker-username='ryan_nix+worldmonitor_ci' \
-  --docker-password='<robot token>'
-oc secrets link default quay-pull --for=pull
-```
+## Cost note
 
-## First run
-
-```bash
-git add -A && git commit -m "ci: UBI 10 image and nightly pipeline" && git push
-gh workflow run build.yml          # or wait for the 07:00 UTC cron
-gh run watch
-```
-
-The `resolve` job pins one commit for the whole run, so the amd64 and arm64
-legs build identical source. Without that, a commit landing mid-run would
-produce a manifest list whose two architectures came from different trees.
-
-The smoke test runs on amd64 only and fails the build if:
-
-- `/api/sidecar-health` never returns 200 (nginx up but sidecar dead, or vice versa)
-- `/` does not serve HTML (the Vite build renames the SPA entry to
-  `dashboard.html`; if that plugin changes upstream, nginx's `try_files` breaks
-  and this catches it)
-- the image's `USER` is not `1001` (a root default would fail `restricted-v2`)
+Upstream caps AviationStack spend but has no LLM ceiling, and the seeders run on
+cron across 500+ feeds. The overlays enable `USAGE_TELEMETRY` and leave the
+fan-out pipelines (`AI_DIGEST_ENABLED`, `BRIEF_COMPOSE_ENABLED`) off. Prepay a
+small OpenRouter balance and enable pipelines one at a time.
 
 ## Licensing
 
-Upstream is **AGPL-3.0-only**. These build files are separate work, but they do
-not change the license of what they build. Self-hosting is clean; network-facing
-modified deployments carry the source-availability obligation. Settle that
-before this becomes a customer demo asset.
+Upstream is **AGPL-3.0-only**. These build and deploy files are separate work
+but don't change the license of what they package. Self-hosting is clean;
+network-facing modified deployments carry the source-availability obligation.
+Settle that before this becomes a customer-facing asset.

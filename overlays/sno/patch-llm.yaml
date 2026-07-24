@@ -1,0 +1,22 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: worldmonitor
+spec:
+  template:
+    spec:
+      containers:
+        - name: worldmonitor
+          env:
+            # The app accepts any OpenAI-compatible endpoint via LLM_API_URL,
+            # and falls back to OLLAMA_API_URL when LLM_API_URL is unset.
+            # Both are set so either code path resolves.
+            - name: LLM_API_URL
+              value: "http://ollama:11434/v1"
+            - name: LLM_MODEL
+              value: "llama3.2:3b"
+            - name: OLLAMA_API_URL
+              value: "http://ollama:11434"
+            - name: OLLAMA_MODEL
+              value: "llama3.2:3b"

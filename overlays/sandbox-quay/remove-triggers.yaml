@@ -1,0 +1,7 @@
+# The base carries an image.openshift.io/triggers annotation that resolves an
+# in-cluster ImageStreamTag. With an external Quay image and no ImageStream,
+# that annotation references a tag that does not exist. Left in place, the
+# image-trigger controller would try to reconcile it and could overwrite the
+# container image field with an empty resolution. Remove it here.
+- op: remove
+  path: /metadata/annotations/image.openshift.io~1triggers

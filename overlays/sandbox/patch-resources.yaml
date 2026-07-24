@@ -1,0 +1,115 @@
+---
+# Developer Sandbox gives ~7Gi RAM / 2 vCPU total across the namespace, and
+# every container needs an explicit limit (a ResourceQuota with no default
+# LimitRange means unbounded pods are rejected). These numbers are sized so the
+# full stack fits with headroom for the build pod.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: worldmonitor
+spec:
+  template:
+    spec:
+      containers:
+        - name: worldmonitor
+          resources:
+            requests:
+              cpu: 100m
+              memory: 384Mi
+            limits:
+              cpu: 500m
+              memory: 1Gi
+          env:
+            # No GPU and no room for a model server in Sandbox. Point at a
+            # hosted provider instead; leave unset to run without AI features.
+            - name: GROQ_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: worldmonitor-apikeys
+                  key: GROQ_API_KEY
+                  optional: true
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis
+spec:
+  template:
+    spec:
+      containers:
+        - name: redis
+          args:
+            - redis-server
+            - --requirepass
+            - $(REDIS_PASSWORD)
+            - --maxmemory
+            - 96mb
+            - --maxmemory-policy
+            - allkeys-lru
+            - --dir
+            - /data
+          resources:
+            requests:
+              cpu: 25m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 160Mi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis-rest
+spec:
+  template:
+    spec:
+      containers:
+        - name: srh
+          resources:
+            requests:
+              cpu: 25m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 160Mi
+---
+# The AIS relay holds a live websocket to aisstream.io and a large in-memory
+# vessel store. It is the single hungriest component and the least useful
+# without an AISSTREAM_API_KEY. Scaled to zero by default in Sandbox; the app
+# degrades gracefully (the maritime layer goes empty, nothing else breaks).
+# Scale it up with: oc scale deploy/ais-relay --replicas=1
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ais-relay
+spec:
+  replicas: 0
+  template:
+    spec:
+      containers:
+        - name: relay
+          env:
+            - name: AIS_MAX_VESSELS
+              value: "2000"
+            - name: AIS_MAX_VESSEL_HISTORY
+              value: "5"
+            - name: RELAY_MEMORY_CLEANUP_GB
+              value: "1"
+          resources:
+            requests:
+              cpu: 50m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 768Mi
+---
+# 2Gi is the practical PVC floor in Sandbox given the 15Gi namespace budget
+# shared with build artifacts and the image registry.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: redis-data
+spec:
+  resources:
+    requests:
+      storage: 1Gi

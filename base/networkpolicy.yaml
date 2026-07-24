@@ -1,0 +1,44 @@
+---
+# Redis and the REST shim hold cached intelligence data and are protected only
+# by a password/token. Restrict them to in-namespace callers so a compromised
+# workload elsewhere on the cluster can't reach them directly.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-cache-from-app
+  labels:
+    app.kubernetes.io/part-of: worldmonitor
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app.kubernetes.io/name
+        operator: In
+        values: ["redis", "redis-rest"]
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchExpressions:
+              - key: app.kubernetes.io/name
+                operator: In
+                values: ["worldmonitor", "ais-relay", "redis-rest"]
+---
+# The Route needs to reach the frontend; allow ingress from the router namespace.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-router-to-frontend
+  labels:
+    app.kubernetes.io/part-of: worldmonitor
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: worldmonitor
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              policy-group.network.openshift.io/ingress: ""

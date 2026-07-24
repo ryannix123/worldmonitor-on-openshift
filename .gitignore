@@ -1,0 +1,22 @@
+# Secrets — generated locally by deploy.sh, never committed.
+# Each overlay's secrets/ holds Redis credentials, the relay shared secret,
+# and API keys (including OPENROUTER_API_KEY).
+overlays/*/secrets/
+**/secrets/
+*.env.local
+
+# Podman/local run artifacts
+.env
+
+# kustomize binary if downloaded into the tree
+/kustomize
+*.tgz
+
+# macOS
+.DS_Store
+**/.DS_Store
+
+# Editor
+*.swp
+.idea/
+.vscode/

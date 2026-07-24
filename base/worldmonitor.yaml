@@ -1,0 +1,141 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: worldmonitor
+  labels:
+    app.kubernetes.io/name: worldmonitor
+    app.kubernetes.io/component: frontend
+    app.kubernetes.io/part-of: worldmonitor
+  annotations:
+    # OpenShift's image-trigger controller resolves this ImageStreamTag to the
+    # fully-qualified internal registry path and writes it into the container's
+    # image field — in whatever namespace this lands in. It also redeploys
+    # automatically when a new image is pushed to the tag.
+    #
+    # This replaces relying on ImageStream lookupPolicy.local, which is NOT
+    # honored for Deployments the way it is for DeploymentConfigs: the kubelet
+    # sees the bare string "worldmonitor:latest", treats it as a Docker Hub
+    # reference, and fails with ImagePullBackOff on docker.io/library/.
+    image.openshift.io/triggers: >-
+      [{"from":{"kind":"ImageStreamTag","name":"worldmonitor:latest"},
+        "fieldPath":"spec.template.spec.containers[?(@.name==\"worldmonitor\")].image",
+        "pause":"false"}]
+    app.openshift.io/connects-to: >-
+      [{"apiVersion":"apps/v1","kind":"Deployment","name":"redis-rest"},
+       {"apiVersion":"apps/v1","kind":"Deployment","name":"ais-relay"}]
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: worldmonitor
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: worldmonitor
+        app.kubernetes.io/component: frontend
+        app.kubernetes.io/part-of: worldmonitor
+    spec:
+      containers:
+        - name: worldmonitor
+          # Overwritten by the image.openshift.io/triggers annotation above.
+          image: image-registry.openshift-image-registry.svc:5000/openshift/worldmonitor:latest
+          ports:
+            - name: http
+              containerPort: 8080
+          envFrom:
+            # Non-secret tunables and any provider keys you choose to keep in a
+            # ConfigMap. Secret always wins on key collision (listed last).
+            - configMapRef:
+                name: worldmonitor-config
+            - secretRef:
+                name: worldmonitor-apikeys
+                optional: true
+          env:
+            - name: UPSTASH_REDIS_REST_URL
+              value: "http://redis-rest"
+            - name: UPSTASH_REDIS_REST_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: worldmonitor-redis
+                  key: REDIS_TOKEN
+            # Upstream compose sets this on the relay but NOT on the app, which
+            # looks like an oversight — in-cluster traffic is plain HTTP here too.
+            - name: UPSTASH_ALLOW_INSECURE_HTTP
+              value: "true"
+            - name: WS_RELAY_URL
+              value: "http://ais-relay:3004"
+            - name: LOCAL_API_PORT
+              value: "46123"
+            - name: LOCAL_API_MODE
+              value: "docker"
+            - name: LOCAL_API_CLOUD_FALLBACK
+              value: "false"
+          # /api/sidecar-health proves BOTH nginx and the node sidecar are up,
+          # per the upstream healthcheck comment.
+          startupProbe:
+            httpGet:
+              path: /api/sidecar-health
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            failureThreshold: 30
+          readinessProbe:
+            httpGet:
+              path: /api/sidecar-health
+              port: http
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /api/sidecar-health
+              port: http
+            periodSeconds: 30
+            failureThreshold: 5
+          resources:
+            requests:
+              cpu: 200m
+              memory: 512Mi
+            limits:
+              cpu: "2"
+              memory: 2Gi
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            capabilities:
+              drop: ["ALL"]
+            seccompProfile:
+              type: RuntimeDefault
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: worldmonitor
+  labels:
+    app.kubernetes.io/name: worldmonitor
+    app.kubernetes.io/part-of: worldmonitor
+spec:
+  selector:
+    app.kubernetes.io/name: worldmonitor
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+---
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: worldmonitor
+  labels:
+    app.kubernetes.io/name: worldmonitor
+    app.kubernetes.io/part-of: worldmonitor
+  annotations:
+    haproxy.router.openshift.io/timeout: 120s
+spec:
+  to:
+    kind: Service
+    name: worldmonitor
+  port:
+    targetPort: http
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect

@@ -1,0 +1,79 @@
+---
+# Serverless Redis HTTP — the Upstash-compatible REST facade the app expects.
+# Upstream builds this from docker/Dockerfile.redis-rest; the upstream SRH
+# image is used directly here so the cluster doesn't need a second BuildConfig.
+# If your docker/Dockerfile.redis-rest pins something different, swap the image
+# and add a matching BuildConfig.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis-rest
+  labels:
+    app.kubernetes.io/name: redis-rest
+    app.kubernetes.io/component: cache-proxy
+    app.kubernetes.io/part-of: worldmonitor
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: redis-rest
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: redis-rest
+        app.kubernetes.io/component: cache-proxy
+        app.kubernetes.io/part-of: worldmonitor
+    spec:
+      containers:
+        - name: srh
+          image: docker.io/hiett/serverless-redis-http:latest
+          env:
+            - name: SRH_MODE
+              value: "env"
+            - name: SRH_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: worldmonitor-redis
+                  key: REDIS_TOKEN
+            - name: SRH_CONNECTION_STRING
+              valueFrom:
+                secretKeyRef:
+                  name: worldmonitor-redis
+                  key: SRH_CONNECTION_STRING
+          ports:
+            - name: http
+              containerPort: 80
+          readinessProbe:
+            tcpSocket:
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 50m
+              memory: 96Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            capabilities:
+              drop: ["ALL"]
+            seccompProfile:
+              type: RuntimeDefault
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis-rest
+  labels:
+    app.kubernetes.io/name: redis-rest
+    app.kubernetes.io/part-of: worldmonitor
+spec:
+  selector:
+    app.kubernetes.io/name: redis-rest
+  ports:
+    - name: http
+      port: 80
+      targetPort: http

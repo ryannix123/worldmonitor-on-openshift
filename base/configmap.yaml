@@ -1,0 +1,26 @@
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: worldmonitor-config
+  labels:
+    app.kubernetes.io/part-of: worldmonitor
+data:
+  # Site variant: full | tech | finance | commodity | happy | energy
+  VITE_VARIANT: "full"
+  # Empty = same-origin API. Correct for a self-hosted single-Route install.
+  VITE_WS_API_URL: ""
+  VITE_MAP_INTERACTION_MODE: "3d"
+  # Free OpenFreeMap tiles unless you host your own PMTiles.
+  VITE_PMTILES_URL: ""
+  # Relax auth/data-source assumptions for a self-hosted API.
+  LOCAL_API_MODE: "docker"
+  # Cap the relay's Yahoo refresh so a homelab isn't hammering upstream.
+  MARKET_YAHOO_REFRESH_INTERVAL_MS: "900000"
+  # Cyber layer off by default (needs threat-intel keys to be useful).
+  VITE_ENABLE_CYBER_LAYER: "false"
+  VITE_ENABLE_AIS: "true"
+  # Digest/brief pipeline off — needs Convex, Resend, and Clerk to function.
+  AI_DIGEST_ENABLED: ""
+  DIGEST_CRON_ENABLED: ""
+  BRIEF_COMPOSE_ENABLED: ""

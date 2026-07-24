@@ -1,0 +1,27 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../base
+  - ../../addons/builds
+  - ollama.yaml
+  - patch-networkpolicy-ollama.yaml
+
+patches:
+  - path: patch-llm.yaml
+
+# Point Deployments at the ImageStream tags produced by the BuildConfigs.
+# lookupPolicy.local:true on the ImageStreams lets the bare name resolve.
+secretGenerator:
+  - name: worldmonitor-redis
+    envs:
+      - secrets/redis.env
+  - name: worldmonitor-relay
+    envs:
+      - secrets/relay.env
+  - name: worldmonitor-apikeys
+    envs:
+      - secrets/apikeys.env
+
+generatorOptions:
+  disableNameSuffixHash: true

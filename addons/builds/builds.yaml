@@ -1,0 +1,86 @@
+---
+apiVersion: image.openshift.io/v1
+kind: ImageStream
+metadata:
+  name: worldmonitor
+  labels:
+    app.kubernetes.io/part-of: worldmonitor
+spec:
+  lookupPolicy:
+    local: true
+---
+apiVersion: image.openshift.io/v1
+kind: ImageStream
+metadata:
+  name: worldmonitor-ais-relay
+  labels:
+    app.kubernetes.io/part-of: worldmonitor
+spec:
+  lookupPolicy:
+    local: true
+---
+apiVersion: build.openshift.io/v1
+kind: BuildConfig
+metadata:
+  name: worldmonitor
+  labels:
+    app.kubernetes.io/part-of: worldmonitor
+spec:
+  source:
+    type: Git
+    git:
+      uri: https://github.com/koala73/worldmonitor.git
+      ref: main
+    # Containerfile.ocp is not upstream — it is injected here so the build
+    # needs no fork. If you fork the repo, drop this and set dockerfilePath.
+    configMaps: []
+  strategy:
+    type: Docker
+    dockerStrategy:
+      dockerfilePath: Dockerfile
+      env:
+        - name: NODE_OPTIONS
+          value: "--max-old-space-size=6144"
+  output:
+    to:
+      kind: ImageStreamTag
+      name: worldmonitor:latest
+  resources:
+    requests:
+      cpu: "1"
+      memory: 4Gi
+    limits:
+      cpu: "4"
+      memory: 8Gi
+  successfulBuildsHistoryLimit: 2
+  failedBuildsHistoryLimit: 2
+---
+apiVersion: build.openshift.io/v1
+kind: BuildConfig
+metadata:
+  name: worldmonitor-ais-relay
+  labels:
+    app.kubernetes.io/part-of: worldmonitor
+spec:
+  source:
+    type: Git
+    git:
+      uri: https://github.com/koala73/worldmonitor.git
+      ref: main
+  strategy:
+    type: Docker
+    dockerStrategy:
+      dockerfilePath: Dockerfile.relay
+  output:
+    to:
+      kind: ImageStreamTag
+      name: worldmonitor-ais-relay:latest
+  resources:
+    requests:
+      cpu: 500m
+      memory: 2Gi
+    limits:
+      cpu: "2"
+      memory: 4Gi
+  successfulBuildsHistoryLimit: 2
+  failedBuildsHistoryLimit: 2

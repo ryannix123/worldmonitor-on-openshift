@@ -1,0 +1,39 @@
+---
+# The frontend build is genuinely heavy: npm ci on the full dependency graph,
+# then build-handlers.mjs, two corpus builders, tsc, and a Vite production
+# build. On SNO this gets 8Gi. Sandbox will not grant that.
+#
+# 3Gi with --max-old-space-size=2560 is the most that reliably schedules. This
+# MAY still OOMKill. If it does, the honest answer is to build the image
+# elsewhere (locally with Podman, or GitHub Actions) and push it to Quay, then
+# skip the BuildConfig entirely — see overlays/sandbox/README.
+apiVersion: build.openshift.io/v1
+kind: BuildConfig
+metadata:
+  name: worldmonitor
+spec:
+  strategy:
+    dockerStrategy:
+      env:
+        - name: NODE_OPTIONS
+          value: "--max-old-space-size=2560"
+  resources:
+    requests:
+      cpu: 500m
+      memory: 2Gi
+    limits:
+      cpu: "1"
+      memory: 3Gi
+---
+apiVersion: build.openshift.io/v1
+kind: BuildConfig
+metadata:
+  name: worldmonitor-ais-relay
+spec:
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      cpu: 500m
+      memory: 1Gi

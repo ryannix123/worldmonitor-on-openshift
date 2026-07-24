@@ -1,0 +1,64 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# No `namespace:` — deploys into whatever `oc` is pointed at.
+#
+# This is the "deploy a prebuilt image" overlay. Unlike overlays/sandbox, it
+# does NOT pull in ../../addons/builds: no BuildConfig, no ImageStream, no
+# in-cluster build. The image comes from Quay, built by the nightly CI in the
+# worldmonitor-on-openshift repo.
+
+resources:
+  - ../../base
+
+# Point both workloads at the external registry. The ais-relay image is only
+# used when you scale that Deployment up from 0 — build it in CI first if so.
+images:
+  # `name` must match the image string in the base BEFORE the tag, which the
+  # base sets to the full internal-registry path (a placeholder the trigger
+  # annotation used to overwrite). Match that exact string.
+  - name: image-registry.openshift-image-registry.svc:5000/openshift/worldmonitor
+    newName: quay.io/ryan_nix/worldmonitor-openshift
+    newTag: latest
+  - name: image-registry.openshift-image-registry.svc:5000/openshift/worldmonitor-ais-relay
+    newName: quay.io/ryan_nix/worldmonitor-ais-relay
+    newTag: latest
+
+patches:
+  - path: patch-resources.yaml
+  - path: patch-llm-openrouter.yaml
+
+  # Drop the ImageStream-trigger annotation from both Deployments — it points
+  # at in-cluster tags that this overlay does not create.
+  - path: remove-triggers.yaml
+    target:
+      kind: Deployment
+      name: worldmonitor
+  - path: remove-triggers.yaml
+    target:
+      kind: Deployment
+      name: ais-relay
+
+  # Sandbox manages its own NetworkPolicies; ours would be redundant or worse.
+  - target:
+      kind: NetworkPolicy
+    patch: |
+      $patch: delete
+      apiVersion: networking.k8s.io/v1
+      kind: NetworkPolicy
+      metadata:
+        name: placeholder
+
+secretGenerator:
+  - name: worldmonitor-redis
+    envs:
+      - secrets/redis.env
+  - name: worldmonitor-relay
+    envs:
+      - secrets/relay.env
+  - name: worldmonitor-apikeys
+    envs:
+      - secrets/apikeys.env
+
+generatorOptions:
+  disableNameSuffixHash: true
