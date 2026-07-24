@@ -30,6 +30,12 @@ spec:
           env:
             - name: SRH_MODE
               value: "env"
+            # SRH defaults to port 80, which OpenShift's restricted-v2 SCC
+            # forbids an arbitrary UID from binding (listen() → eacces, and the
+            # Erlang VM crashes at boot before it ever contacts Redis). Move it
+            # to an unprivileged port.
+            - name: SRH_PORT
+              value: "8080"
             - name: SRH_TOKEN
               valueFrom:
                 secretKeyRef:
@@ -42,7 +48,7 @@ spec:
                   key: SRH_CONNECTION_STRING
           ports:
             - name: http
-              containerPort: 80
+              containerPort: 8080
           readinessProbe:
             tcpSocket:
               port: http
