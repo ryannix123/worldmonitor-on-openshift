@@ -118,3 +118,16 @@ Upstream is **AGPL-3.0-only**. These build and deploy files are separate work
 but don't change the license of what they package. Self-hosting is clean;
 network-facing modified deployments carry the source-availability obligation.
 Settle that before this becomes a customer-facing asset.
+
+## On the CVE story
+
+The pipeline runs `--fail-on critical` and **means it**. When the relay build
+hit CVE-2026-59873 (a CVSS 9.2 DoS in transitively-pulled `node-tar` 7.5.15),
+the build failed rather than shipping it. That is the behavior, not a bug.
+
+The fix was to force the patched version via an injected npm `overrides` entry
+(`tar: 7.5.19`) in the relay Containerfile, plus a build-time check
+(`ci/verify-tar.mjs`) that fails if any resolved copy is still vulnerable. The
+CVE is *removed*, not suppressed — which is a stronger claim than a VEX
+exception and a much stronger one than lowering the gate.
+
