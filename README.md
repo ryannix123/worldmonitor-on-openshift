@@ -80,7 +80,10 @@ Nightly at 07:00 UTC (02:00 CDT), plus on push and manual dispatch:
 - Builds both arches, smoke-tests amd64 (health endpoint, SPA fallback,
   non-root UID), assembles a manifest list
 - Syft SBOM + Grype scan, `--fail-on critical` only, results in the run summary
-- Pushes `<sha>` and `latest` to `quay.io/ryan_nix/worldmonitor-openshift`
+- Builds the relay image the same way (`build-relay` job,
+  `Containerfile.ubi10-relay`)
+- Pushes both `<sha>` and `latest` to `quay.io/ryan_nix/worldmonitor-openshift`
+  and `quay.io/ryan_nix/worldmonitor-ais-relay`
 
 `upstream-sync.yml` opens a bump PR every Monday, since upstream ships from
 `main` and stopped tagging ~5 months ago. It flags changes to build-relevant

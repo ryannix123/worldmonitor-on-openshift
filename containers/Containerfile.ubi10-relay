@@ -1,0 +1,71 @@
+# =============================================================================
+# World Monitor AIS Relay — UBI 10 / Node.js 24
+# =============================================================================
+# The relay is a single long-running Node process (scripts/ais-relay.cjs) that
+# holds a websocket to aisstream.io, polls OpenSky for aircraft, proxies RSS,
+# and warms Redis caches the dashboard reads. It listens on 3004.
+#
+# Much simpler than the main image: no nginx, no static build, no sidecar — one
+# Node process. So this is a single-stage build on ubi10/nodejs-24 with the
+# relay's runtime dependencies installed.
+#
+# OpenShift arbitrary-UID support is the same pattern as the main image:
+# group-0 ownership, group-writable, numeric USER.
+# =============================================================================
+
+ARG NODE_IMAGE=registry.access.redhat.com/ubi10/nodejs-24:latest
+
+FROM ${NODE_IMAGE} AS builder
+
+USER 0
+WORKDIR /build
+
+# The relay imports a subset of the app's dependencies. Installing the full
+# production graph is wasteful but reliable — the relay's exact dependency
+# closure is not separately declared upstream. If image size matters later,
+# prune to the relay's actual imports.
+COPY package.json package-lock.json ./
+RUN npm ci --omit=dev --ignore-scripts
+
+# ── Runtime ──────────────────────────────────────────────────────────────────
+FROM ${NODE_IMAGE} AS final
+
+ARG VERSION=dev
+ARG VCS_REF=unknown
+ARG BUILD_DATE=unknown
+
+LABEL org.opencontainers.image.title="World Monitor AIS Relay (UBI 10)" \
+      org.opencontainers.image.description="AIS/OpenSky/RSS relay for World Monitor on Red Hat UBI 10" \
+      org.opencontainers.image.source="https://github.com/koala73/worldmonitor" \
+      org.opencontainers.image.licenses="AGPL-3.0-only" \
+      org.opencontainers.image.version="${VERSION}" \
+      org.opencontainers.image.revision="${VCS_REF}" \
+      org.opencontainers.image.created="${BUILD_DATE}" \
+      io.openshift.expose-services="3004:http" \
+      io.openshift.tags="worldmonitor,relay,ais,nodejs"
+
+USER 0
+WORKDIR /app
+
+# node_modules from the builder, plus the relay script and its lib deps.
+COPY --from=builder /build/node_modules ./node_modules
+COPY scripts ./scripts
+COPY package.json ./
+
+# Arbitrary-UID: group-0 ownership + group-writable on the app dir.
+RUN chgrp -R 0 /app && chmod -R g=u /app
+
+USER 1001
+
+EXPOSE 3004
+
+# The relay exposes /metrics (RELAY_METRICS_WINDOW_SECONDS). A TCP connect is
+# the safe cross-version liveness signal — a specific path might change, but
+# "is it listening on 3004" is the thing that matters. The Deployment's own
+# probes supersede this in OpenShift.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+  CMD ["/usr/bin/node", "-e", "require('node:net').connect(3004,'127.0.0.1').on('connect',()=>process.exit(0)).on('error',()=>process.exit(1))"]
+
+# scripts/ais-relay.cjs reads PORT (default 3004 in the compose) and the
+# AISSTREAM/OPENSKY/relay-secret env vars. The Deployment provides those.
+CMD ["node", "scripts/ais-relay.cjs"]

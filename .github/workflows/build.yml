@@ -212,8 +212,122 @@ jobs:
 
   # Multi-arch manifest so `podman pull` resolves correctly on your M5 (arm64)
   # and on x86 OpenShift nodes without anyone passing --platform.
+  # The relay is a second image with its own repo. Separate job rather than a
+  # matrix dimension on `build` because its smoke test and Containerfile differ
+  # and folding them together would make both harder to read.
+  build-relay:
+    needs: resolve
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    env:
+      RELAY_IMAGE: worldmonitor-ais-relay
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch upstream at pinned SHA
+        run: |
+          set -euo pipefail
+          REPO="$GITHUB_WORKSPACE"
+          [ -f "$REPO/containers/Containerfile.ubi10-relay" ] \
+            || { echo "::error::missing containers/Containerfile.ubi10-relay"; exit 1; }
+          git clone --filter=blob:none --no-checkout \
+            "https://github.com/${UPSTREAM_REPO}.git" "$RUNNER_TEMP/upstream"
+          git -C "$RUNNER_TEMP/upstream" checkout --detach "${{ needs.resolve.outputs.sha }}"
+          mkdir -p "$RUNNER_TEMP/upstream/containers"
+          cp "$REPO/containers/Containerfile.ubi10-relay" "$RUNNER_TEMP/upstream/containers/"
+
+      - name: Build
+        run: |
+          cd "$RUNNER_TEMP/upstream"
+          set -euo pipefail
+          podman build \
+            --platform "linux/${{ matrix.arch }}" \
+            --build-arg VERSION="${{ needs.resolve.outputs.short }}" \
+            --build-arg VCS_REF="${{ needs.resolve.outputs.sha }}" \
+            --build-arg BUILD_DATE="${{ needs.resolve.outputs.date }}" \
+            -f containers/Containerfile.ubi10-relay \
+            -t "localhost/${RELAY_IMAGE}:${{ matrix.arch }}" \
+            .
+
+      # The relay needs a RELAY_SHARED_SECRET to boot (it refuses without one)
+      # and will try to open upstream websockets. We only assert it starts,
+      # binds 3004, and stays up a few seconds — not that it connects to live
+      # data sources, which need real API keys the CI does not hold.
+      - name: Smoke test
+        if: matrix.arch == 'amd64'
+        run: |
+          set -euo pipefail
+          podman run -d --name relay-smoke -p 13004:3004 \
+            -e PORT=3004 \
+            -e RELAY_SHARED_SECRET=ci-smoke-test-secret \
+            "localhost/${RELAY_IMAGE}:amd64"
+          ok=false
+          for i in $(seq 1 30); do
+            if podman exec relay-smoke node -e "require('node:net').connect(3004,'127.0.0.1').on('connect',()=>process.exit(0)).on('error',()=>process.exit(1))" 2>/dev/null; then
+              echo "relay listening on 3004 after ${i}s"; ok=true; break
+            fi
+            sleep 1
+          done
+          if [ "$ok" != true ]; then
+            echo "::error::relay never listened on 3004"; podman logs relay-smoke; exit 1
+          fi
+          # Must not have crash-looped: still running after the probe.
+          podman inspect -f '{{.State.Running}}' relay-smoke | grep -q true \
+            || { echo "::error::relay exited"; podman logs relay-smoke; exit 1; }
+          UID_IN_IMAGE="$(podman inspect localhost/${RELAY_IMAGE}:amd64 --format '{{.Config.User}}')"
+          [ "$UID_IN_IMAGE" = "1001" ] || { echo "::error::expected USER 1001, got '${UID_IN_IMAGE}'"; exit 1; }
+          podman rm -f relay-smoke
+
+      - name: Export, SBOM, scan
+        run: |
+          set -euo pipefail
+          podman save --format oci-archive \
+            -o "relay-${{ matrix.arch }}.tar" \
+            "localhost/${RELAY_IMAGE}:${{ matrix.arch }}"
+          curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh -s -- -b /usr/local/bin
+          curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sh -s -- -b /usr/local/bin
+          syft "oci-archive:relay-${{ matrix.arch }}.tar" \
+            -o "spdx-json=sbom-relay-${{ matrix.arch }}.spdx.json" -o table
+          grype "oci-archive:relay-${{ matrix.arch }}.tar" \
+            -o table -o "json=scan-relay-${{ matrix.arch }}.json" --fail-on critical
+
+      - name: Scan summary
+        if: always()
+        run: |
+          set -euo pipefail
+          [ -f "scan-relay-${{ matrix.arch }}.json" ] || exit 0
+          python3 ci/scan-summary.py "scan-relay-${{ matrix.arch }}.json" "relay-${{ matrix.arch }}" \
+            >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: security-relay-${{ matrix.arch }}
+          path: |
+            sbom-relay-${{ matrix.arch }}.spdx.json
+            scan-relay-${{ matrix.arch }}.json
+          retention-days: 90
+
+      - name: Push
+        if: github.event_name != 'pull_request'
+        env:
+          QUAY_USER: ${{ secrets.QUAY_USERNAME }}
+          QUAY_PASS: ${{ secrets.QUAY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          echo "$QUAY_PASS" | podman login -u "$QUAY_USER" --password-stdin "${REGISTRY}"
+          DEST="${REGISTRY}/${IMAGE_NS}/${RELAY_IMAGE}"
+          podman push "localhost/${RELAY_IMAGE}:${{ matrix.arch }}" \
+            "${DEST}:${{ needs.resolve.outputs.short }}-${{ matrix.arch }}"
+
   manifest:
-    needs: [resolve, build]
+    needs: [resolve, build, build-relay]
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     env:
@@ -231,27 +345,29 @@ jobs:
         run: |
           set -euo pipefail
           echo "$QUAY_PASS" | podman login -u "$QUAY_USER" --password-stdin "${REGISTRY}"
-          DEST="${REGISTRY}/${IMAGE_NS}/${IMAGE_NAME}"
           SHORT="${{ needs.resolve.outputs.short }}"
 
-          for TAG in "${SHORT}" latest; do
-            # Remove any local manifest of the same name left from the previous
-            # loop iteration. `|| true` because it does not exist on first pass.
-            podman manifest rm "${DEST}:${TAG}" 2>/dev/null || true
-            podman manifest create "${DEST}:${TAG}"
-            podman manifest add "${DEST}:${TAG}" "docker://${DEST}:${SHORT}-amd64"
-            podman manifest add "${DEST}:${TAG}" "docker://${DEST}:${SHORT}-arm64"
-            podman manifest push --all "${DEST}:${TAG}" "docker://${DEST}:${TAG}"
-            echo "pushed ${DEST}:${TAG}"
+          # Both images get a manifest list from their two per-arch tags.
+          for IMG in "${IMAGE_NAME}" worldmonitor-ais-relay; do
+            DEST="${REGISTRY}/${IMAGE_NS}/${IMG}"
+            for TAG in "${SHORT}" latest; do
+              podman manifest rm "${DEST}:${TAG}" 2>/dev/null || true
+              podman manifest create "${DEST}:${TAG}"
+              podman manifest add "${DEST}:${TAG}" "docker://${DEST}:${SHORT}-amd64"
+              podman manifest add "${DEST}:${TAG}" "docker://${DEST}:${SHORT}-arm64"
+              podman manifest push --all "${DEST}:${TAG}" "docker://${DEST}:${TAG}"
+              echo "pushed ${DEST}:${TAG}"
+            done
           done
 
       - name: Summary
         run: |
           {
-            echo "### Image published"
+            echo "### Images published"
             echo
             echo '```'
             echo "podman pull ${REGISTRY}/${IMAGE_NS}/${IMAGE_NAME}:${{ needs.resolve.outputs.short }}"
+            echo "podman pull ${REGISTRY}/${IMAGE_NS}/worldmonitor-ais-relay:${{ needs.resolve.outputs.short }}"
             echo '```'
             echo
             echo "Upstream commit: \`${{ needs.resolve.outputs.sha }}\`"
