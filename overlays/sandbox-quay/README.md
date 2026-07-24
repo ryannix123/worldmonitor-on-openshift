@@ -52,3 +52,20 @@ oc rollout restart deploy/worldmonitor
 
 For reproducibility, pin a specific tag instead of `latest` by editing the
 `newTag` in kustomization.yaml to the 7-char SHA from a CI run.
+
+
+## The AIS relay requires a key to start
+
+`ais-relay` hard-exits at startup without `AISSTREAM_API_KEY` — it does not
+degrade gracefully, it CrashLoopBackOffs. If you scale the relay up, supply the
+key first:
+
+```bash
+./deploy.sh -o overlays/sandbox-quay \
+  -E OPENROUTER_API_KEY \
+  -e AISSTREAM_API_KEY=<your aisstream key>
+oc scale deploy/ais-relay --replicas=1
+```
+
+Get a free key at https://aisstream.io. Without the relay, the maritime,
+Hormuz-tracker, and chokepoint-rate panels stay empty; everything else works.
