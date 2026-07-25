@@ -143,9 +143,13 @@ This is a stronger posture than a version bump: it scales (you can't force-patch
 every transitive CVE forever), and it's auditable (the claim and its
 justification are written down, not hidden in a lockfile diff).
 
-Note the `.grype.yaml` ignore rule rather than `grype --vex`: Grype has a known
-issue (anchore/grype#1639) where `--vex` is dropped when `--fail-on` is set. The
-ignore rule is applied before the threshold check, so it actually works.
+Enforcement is a plain-ID ignore rule in `.grype.yaml`
+(`- vulnerability: CVE-2026-59873`), not a `vex-status` rule. A `vex-status:
+not_affected` ignore only fires when Grype has ALSO loaded a matching `--vex`
+document; on its own it is inert and the CVE falls through to `--fail-on`. The
+bare-ID ignore suppresses the match unconditionally, across npm and the rpm
+false-matches on the same ID. `relay.openvex.json` remains the documented
+rationale; `.grype.yaml` does the enforcement.
 
 **The gate stays honest.** `--fail-on critical` is unchanged. The tar exception
 is one documented, justified not-affected assessment — not a lowered bar. Any

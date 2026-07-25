@@ -20,9 +20,11 @@ images:
   - name: image-registry.openshift-image-registry.svc:5000/openshift/worldmonitor
     newName: quay.io/ryan_nix/worldmonitor-openshift
     newTag: latest
+  # Relay shares the app's Quay repo under a relay- tag prefix (see CI build.yml)
+  # rather than a separate repo — one repo, one set of robot permissions.
   - name: image-registry.openshift-image-registry.svc:5000/openshift/worldmonitor-ais-relay
-    newName: quay.io/ryan_nix/worldmonitor-ais-relay
-    newTag: latest
+    newName: quay.io/ryan_nix/worldmonitor-openshift
+    newTag: relay-latest
 
 patches:
   - path: patch-resources.yaml

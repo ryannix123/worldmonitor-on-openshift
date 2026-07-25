@@ -174,6 +174,8 @@ jobs:
           # Report everything, fail only on Critical. UBI ships Low/Medium
           # findings Red Hat has triaged as not-affected; failing on those makes
           # the pipeline permanently red, which means nobody reads it.
+          # --config points at the repo's .grype.yaml (VEX-justified ignore
+          # rules); the build runs from $RUNNER_TEMP so it is not auto-found.
           grype "oci-archive:image-${{ matrix.arch }}.tar" \
             --config "$GITHUB_WORKSPACE/.grype.yaml" \
             -o table \
@@ -228,7 +230,8 @@ jobs:
             runner: ubuntu-24.04-arm
     runs-on: ${{ matrix.runner }}
     env:
-      RELAY_IMAGE: worldmonitor-ais-relay
+      RELAY_IMAGE: worldmonitor-ais-relay        # local build tag
+      IMAGE_NAME: worldmonitor-openshift          # shared Quay repo (push dest)
     steps:
       - uses: actions/checkout@v4
 
@@ -242,7 +245,8 @@ jobs:
             "https://github.com/${UPSTREAM_REPO}.git" "$RUNNER_TEMP/upstream"
           git -C "$RUNNER_TEMP/upstream" checkout --detach "${{ needs.resolve.outputs.sha }}"
           mkdir -p "$RUNNER_TEMP/upstream/containers"
-          cp "$REPO/containers/Containerfile.ubi10-relay" "$RUNNER_TEMP/upstream/containers/"
+          cp "$REPO/containers/Containerfile.ubi10-relay" \
+             "$RUNNER_TEMP/upstream/containers/"
 
       - name: Build
         run: |
@@ -343,9 +347,13 @@ jobs:
         run: |
           set -euo pipefail
           echo "$QUAY_PASS" | podman login -u "$QUAY_USER" --password-stdin "${REGISTRY}"
-          DEST="${REGISTRY}/${IMAGE_NS}/${RELAY_IMAGE}"
+          # Relay shares the app's Quay repo (worldmonitor-openshift) under a
+          # relay- tag prefix, rather than a second repo. One repo, one set of
+          # robot permissions. IMAGE_NAME is the shared repo; RELAY_IMAGE stays
+          # the local build tag only.
+          DEST="${REGISTRY}/${IMAGE_NS}/${IMAGE_NAME}"
           podman push "localhost/${RELAY_IMAGE}:${{ matrix.arch }}" \
-            "${DEST}:${{ needs.resolve.outputs.short }}-${{ matrix.arch }}"
+            "${DEST}:relay-${{ needs.resolve.outputs.short }}-${{ matrix.arch }}"
 
   manifest:
     needs: [resolve, build, build-relay]
@@ -368,18 +376,26 @@ jobs:
           echo "$QUAY_PASS" | podman login -u "$QUAY_USER" --password-stdin "${REGISTRY}"
           SHORT="${{ needs.resolve.outputs.short }}"
 
-          # Both images get a manifest list from their two per-arch tags.
-          for IMG in "${IMAGE_NAME}" worldmonitor-ais-relay; do
-            DEST="${REGISTRY}/${IMAGE_NS}/${IMG}"
-            for TAG in "${SHORT}" latest; do
+          DEST="${REGISTRY}/${IMAGE_NS}/${IMAGE_NAME}"
+
+          # Two images, one repo. The app uses bare tags (<sha>, latest); the
+          # relay uses relay-prefixed tags (relay-<sha>, relay-latest). Each
+          # manifest list is assembled from its two per-arch tags.
+          #   app:   <sha>-amd64  + <sha>-arch        -> <sha>,        latest
+          #   relay: relay-<sha>-amd64 + ...-arm64    -> relay-<sha>,  relay-latest
+          assemble() {
+            local per_arch_prefix="$1" list_a="$2" list_b="$3"
+            for TAG in "$list_a" "$list_b"; do
               podman manifest rm "${DEST}:${TAG}" 2>/dev/null || true
               podman manifest create "${DEST}:${TAG}"
-              podman manifest add "${DEST}:${TAG}" "docker://${DEST}:${SHORT}-amd64"
-              podman manifest add "${DEST}:${TAG}" "docker://${DEST}:${SHORT}-arm64"
+              podman manifest add "${DEST}:${TAG}" "docker://${DEST}:${per_arch_prefix}-amd64"
+              podman manifest add "${DEST}:${TAG}" "docker://${DEST}:${per_arch_prefix}-arm64"
               podman manifest push --all "${DEST}:${TAG}" "docker://${DEST}:${TAG}"
               echo "pushed ${DEST}:${TAG}"
             done
-          done
+          }
+          assemble "${SHORT}"       "${SHORT}"       "latest"
+          assemble "relay-${SHORT}" "relay-${SHORT}" "relay-latest"
 
       - name: Summary
         run: |
@@ -388,7 +404,7 @@ jobs:
             echo
             echo '```'
             echo "podman pull ${REGISTRY}/${IMAGE_NS}/${IMAGE_NAME}:${{ needs.resolve.outputs.short }}"
-            echo "podman pull ${REGISTRY}/${IMAGE_NS}/worldmonitor-ais-relay:${{ needs.resolve.outputs.short }}"
+            echo "podman pull ${REGISTRY}/${IMAGE_NS}/${IMAGE_NAME}:relay-${{ needs.resolve.outputs.short }}"
             echo '```'
             echo
             echo "Upstream commit: \`${{ needs.resolve.outputs.sha }}\`"
