@@ -175,6 +175,7 @@ jobs:
           # findings Red Hat has triaged as not-affected; failing on those makes
           # the pipeline permanently red, which means nobody reads it.
           grype "oci-archive:image-${{ matrix.arch }}.tar" \
+            --config "$GITHUB_WORKSPACE/.grype.yaml" \
             -o table \
             -o "json=scan-${{ matrix.arch }}.json" \
             --fail-on critical
@@ -315,6 +316,7 @@ jobs:
           syft "oci-archive:relay-${{ matrix.arch }}.tar" \
             -o "spdx-json=sbom-relay-${{ matrix.arch }}.spdx.json" -o table
           grype "oci-archive:relay-${{ matrix.arch }}.tar" \
+            --config "$GITHUB_WORKSPACE/.grype.yaml" \
             -o table -o "json=scan-relay-${{ matrix.arch }}.json" --fail-on critical
 
       - name: Scan summary
