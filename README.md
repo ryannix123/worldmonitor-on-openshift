@@ -1,17 +1,78 @@
+<p align="center">
+  <img src="docs/assets/banner.svg" alt="World Monitor on OpenShift" width="100%">
+</p>
+
+<p align="center">
+  <a href="https://github.com/ryannix123/worldmonitor-on-openshift/actions/workflows/build.yml">
+    <img src="https://github.com/ryannix123/worldmonitor-on-openshift/actions/workflows/build.yml/badge.svg" alt="Build status"></a>
+  <img src="https://img.shields.io/badge/base-UBI%2010-EE0000?logo=redhat&logoColor=white" alt="UBI 10">
+  <img src="https://img.shields.io/badge/platform-OpenShift-EE0000?logo=redhatopenshift&logoColor=white" alt="OpenShift">
+  <img src="https://img.shields.io/badge/arch-amd64%20%7C%20arm64-2dd4bf" alt="Multi-arch">
+  <img src="https://img.shields.io/badge/SBOM-SPDX-2dd4bf" alt="SBOM SPDX">
+  <img src="https://img.shields.io/badge/scan-Grype-blueviolet" alt="Grype scanned">
+  <img src="https://img.shields.io/badge/license-AGPL--3.0-informational" alt="AGPL-3.0">
+</p>
+
 # World Monitor on OpenShift
 
-A Red Hat–based container build and OpenShift deployment for
-[koala73/worldmonitor](https://github.com/koala73/worldmonitor) — a real-time
-global intelligence dashboard. This repo does two things:
+Run a live, real-time global intelligence platform on your own cluster —
+built on Red Hat UBI, published through a security-scanned pipeline, and
+deployed with a single command.
 
-1. **Builds** a UBI 10 image nightly and publishes it to Quay, with SBOM and
-   vulnerability scanning.
-2. **Deploys** it to OpenShift (Developer Sandbox or Single Node OpenShift) via
-   Kustomize overlays.
+[World Monitor](https://github.com/koala73/worldmonitor) turns public data —
+markets, trade, conflict, energy, infrastructure, aviation, maritime, and 500+
+news feeds — into a live operating picture of the world. A dark map, live
+tickers, chokepoint analysis, vessel and flight tracking, AI-assisted briefs.
+It's the kind of dashboard people reach for "open-source Palantir" to describe,
+though [its author pushes back on that](https://www.worldmonitor.app/blog/posts/worldmonitor-is-not-palantir/):
+Palantir makes *your institution's private data* operational; World Monitor
+assembles *the public world's data* and shows its own cracks in the open. This
+repo is about running that second thing, well, on infrastructure you control.
 
-The upstream app runs the same feed-aggregation engine everywhere; this repo
-repackages it on Red Hat's supported base images and wires it for a
-`restricted-v2` cluster.
+**What this repo adds:** the upstream project ships as an Alpine container aimed
+at Vercel and Railway. This repo rebuilds it the way you'd run it in an
+enterprise — on Red Hat's UBI 10 base images, hardened for OpenShift's
+`restricted-v2` security context, built by a multi-arch CI pipeline that
+generates SBOMs and gates on vulnerabilities, and deployed through Kustomize
+overlays with one command.
+
+So there are two halves:
+
+1. **Build** — a nightly multi-arch (amd64 + arm64) pipeline that rebuilds both
+   the app and its data relay on UBI 10, generates SPDX SBOMs, scans with Grype,
+   fails the build on Critical CVEs, and publishes to Quay.
+2. **Deploy** — Kustomize overlays for OpenShift Developer Sandbox (free tier),
+   Single Node OpenShift with a GPU for local LLM inference, or plain Podman on
+   a laptop. One script, namespace-portable, with a teardown path.
+
+The result: the same live intelligence platform — vessels moving on the map,
+chokepoint flows, conflict zones, market data, all seeding through Redis — but
+running on images you built, scanned, and can audit end to end.
+
+## Engineering highlights
+
+The interesting parts aren't "it runs" — it's *how* it was made to run safely
+and repeatably:
+
+- **UBI 10, not Alpine.** Both images rebuilt on Red Hat's supported base
+  (`ubi10/nodejs-24`, `ubi-minimal`), matching the app's Node 24 requirement
+  with no version compromise.
+- **No init system.** The upstream image runs supervisord to babysit nginx and a
+  Node sidecar. This replaces it with a 40-line signal-handling shell entrypoint
+  — smaller image, fewer CVEs, and a documented reason (`exec nginx` as PID 1
+  silently orphans the sidecar on shutdown; the shell stays PID 1 instead).
+- **Arbitrary-UID clean.** Runs under OpenShift's `restricted-v2` SCC with no
+  privileged access — group-0 ownership, no baked-in root.
+- **A real security supply chain.** Multi-arch build, SPDX SBOM per image, Grype
+  scan, `--fail-on critical`. When the pipeline hit a genuine CVSS 9.2 in a
+  transitive dependency, it *failed the build* — and the fix was a documented
+  [VEX not-affected assessment](#on-the-cve-story), not a suppressed warning or
+  a lowered gate.
+- **Namespace-portable deploy.** Nothing hardcodes a namespace; the same
+  overlays run on any cluster the current `oc` context points at, from a free
+  Developer Sandbox to a GPU-equipped Single Node OpenShift.
+- **Claude wired in.** Live LLM-assisted briefs via OpenRouter, with a preflight
+  that verifies the model is actually reachable rather than silently falling back.
 
 ## Layout
 
