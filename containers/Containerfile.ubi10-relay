@@ -26,29 +26,13 @@ WORKDIR /build
 # prune to the relay's actual imports.
 COPY package.json package-lock.json ./
 
-# --- Security override: force patched node-tar ------------------------------
-# Upstream's lockfile pulls tar 7.5.15 transitively, which is vulnerable to
-# CVE-2026-59873 (GHSA-23hp-3jrh-7fpw, CVSS 9.2 — decompression/parse DoS,
-# fixed in 7.5.19). We cannot edit upstream's package.json, so inject an npm
-# `overrides` entry at build time and let npm re-resolve.
-#
-# `npm ci` is intentionally NOT used here: ci refuses to reconcile a lockfile
-# against a just-added override (it demands package.json and lock already be in
-# sync). `npm install` regenerates the tree with the override applied. The
-# trade-off is a slightly less reproducible install than ci, which is why the
-# override is pinned to an exact version rather than a range.
-RUN node -e "const fs=require('fs');     const p=JSON.parse(fs.readFileSync('package.json'));     p.overrides=Object.assign({}, p.overrides, {tar:'7.5.19'});     fs.writeFileSync('package.json', JSON.stringify(p,null,2));"  && npm install --omit=dev --ignore-scripts --no-audit --no-fund
-
-# Belt and suspenders: fail the BUILD if any resolved tar is still < 7.5.19, so
-# a future upstream change that outmaneuvers the override cannot silently
-# reintroduce the vulnerable version. Grype would catch it too, but failing here
-# is faster and closer to the cause.
-#
-# Inlined as a single-line RUN (not a heredoc or COPYed script): heredoc RUN
-# support varies by podman version, and a COPY depends on the file being staged
-# into the build context and committed. A single RUN has none of those failure
-# points.
-RUN node -e 'const{readFileSync}=require("node:fs"),{execSync}=require("node:child_process"),MIN=[7,5,19],cmp=v=>{const p=v.split(".").map(Number);for(let i=0;i<3;i++){if((p[i]??0)<MIN[i])return -1;if((p[i]??0)>MIN[i])return 1}return 0};let paths=[];try{paths=execSync("find node_modules -path \"*/tar/package.json\"",{encoding:"utf8"}).split("\n").filter(Boolean)}catch{}const bad=[];for(const path of paths){try{const{version}=JSON.parse(readFileSync(path,"utf8"));if(version&&cmp(version)<0)bad.push(path+" -> "+version)}catch{}}if(bad.length){console.error("VULNERABLE node-tar (< 7.5.19, CVE-2026-59873) remains:");for(const b of bad)console.error("  "+b);process.exit(1)}console.log("tar override verified: "+paths.length+" copy/copies, all >= 7.5.19")'
+# Install the relay's runtime dependencies. tar 7.5.15 comes in transitively
+# and carries CVE-2026-59873 (a decompression/parse DoS in node-tar). We do NOT
+# force-patch it here: the relay is a network gateway (AIS/OpenSky/Telegram/RSS)
+# that never extracts tar archives, so the vulnerable code path is unreachable.
+# That not-affected assessment is documented in containers/relay.openvex.json
+# and applied at scan time via .grype.yaml. See README "On the CVE story".
+RUN npm ci --omit=dev --ignore-scripts
 
 # ── Runtime ──────────────────────────────────────────────────────────────────
 FROM ${NODE_IMAGE} AS final

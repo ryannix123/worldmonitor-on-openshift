@@ -1,0 +1,27 @@
+{
+  "@context": "https://openvex.dev/ns/v0.2.0",
+  "@id": "https://github.com/ryannix123/worldmonitor-on-openshift/relay-vex",
+  "author": "Ryan Nix",
+  "role": "Deployment Engineer",
+  "timestamp": "2026-07-25T00:00:00Z",
+  "version": 1,
+  "statements": [
+    {
+      "vulnerability": {
+        "name": "CVE-2026-59873",
+        "aliases": ["GHSA-23hp-3jrh-7fpw"]
+      },
+      "products": [
+        {
+          "@id": "pkg:oci/worldmonitor-ais-relay",
+          "identifiers": {
+            "purl": "pkg:oci/worldmonitor-ais-relay"
+          }
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "CVE-2026-59873 is a decompression/parse DoS that requires the application to extract an attacker-supplied tar archive with node-tar. The AIS relay (scripts/ais-relay.cjs) is a network gateway: AIS over WebSocket, OpenSky over REST polling, Telegram over MTProto, and RSS/JSON feed proxying. It never extracts tar archives. node-tar is present only as a transitive build/tooling dependency; its extract code path is unreachable at relay runtime."
+    }
+  ]
+}

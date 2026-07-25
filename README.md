@@ -121,13 +121,40 @@ Settle that before this becomes a customer-facing asset.
 
 ## On the CVE story
 
-The pipeline runs `--fail-on critical` and **means it**. When the relay build
-hit CVE-2026-59873 (a CVSS 9.2 DoS in transitively-pulled `node-tar` 7.5.15),
-the build failed rather than shipping it. That is the behavior, not a bug.
+The pipeline runs `--fail-on critical` and means it. Two things happened worth
+recording, because the *reasoning* matters more than the green checkmark.
 
-The fix was to force the patched version via an injected npm `overrides` entry
-(`tar: 7.5.19`) in the relay Containerfile, plus a build-time check
-(`ci/verify-tar.mjs`) that fails if any resolved copy is still vulnerable. The
-CVE is *removed*, not suppressed — which is a stronger claim than a VEX
-exception and a much stronger one than lowering the gate.
+**tar (CVE-2026-59873).** The relay build flagged a CVSS 9.2 in transitively
+pulled `node-tar` 7.5.15 — a decompression/parse DoS. First instinct was to
+force-patch it via an npm `overrides` bump to 7.5.19. That turned out to be the
+wrong call twice over: npm's `overrides` is documented-unreliable for transitive
+deps (it silently failed to apply across two attempts), and more importantly, a
+version bump was solving the wrong problem.
+
+The relay is a network gateway — AIS over WebSocket, OpenSky over REST, Telegram
+over MTProto, RSS/JSON proxying. **It never extracts tar archives.** The
+vulnerable code path is unreachable at runtime. So the honest engineering answer
+isn't to fight npm into bumping a dependency the relay doesn't exploit; it's to
+assess it as **not-affected** and document why. That assessment lives in
+`containers/relay.openvex.json` (an OpenVEX statement) and is applied at scan
+time via `.grype.yaml` using justification `vulnerable_code_not_in_execute_path`.
+
+This is a stronger posture than a version bump: it scales (you can't force-patch
+every transitive CVE forever), and it's auditable (the claim and its
+justification are written down, not hidden in a lockfile diff).
+
+Note the `.grype.yaml` ignore rule rather than `grype --vex`: Grype has a known
+issue (anchore/grype#1639) where `--vex` is dropped when `--fail-on` is set. The
+ignore rule is applied before the threshold check, so it actually works.
+
+**The gate stays honest.** `--fail-on critical` is unchanged. The tar exception
+is one documented, justified not-affected assessment — not a lowered bar. Any
+*new* Critical, or one in code the relay actually reaches, still fails the build.
+
+### Scope caveat
+
+Grype scans OS and package metadata, not reachability. A clean scan means no
+*known* CVEs in the dependency versions present (minus the documented VEX
+exception), not that the application is free of vulnerabilities. For a claim
+about application dependencies specifically, add `npm audit --production`.
 

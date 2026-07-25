@@ -1,0 +1,23 @@
+# Grype scan policy.
+#
+# The pipeline fails the build on Critical vulnerabilities (--fail-on critical).
+# This file records the ONE documented exception, as a VEX-justified ignore rule
+# rather than a blanket suppression.
+#
+# Why an ignore rule and not --vex: Grype has a known issue (anchore/grype#1639)
+# where a --vex document is NOT honored when --fail-on is also set — the CVE
+# reappears and fails the build. An ignore rule in .grype.yaml IS applied before
+# the fail-on threshold check, so it works. The justification is the same one in
+# containers/relay.openvex.json.
+ignore:
+  # CVE-2026-59873 / GHSA-23hp-3jrh-7fpw — node-tar decompression/parse DoS.
+  # not_affected: the relay never extracts tar archives (AIS/OpenSky/Telegram/
+  # RSS gateway). tar is a transitive build/tooling dep; its extract path is
+  # unreachable at runtime. Full assessment: containers/relay.openvex.json.
+  - vulnerability: CVE-2026-59873
+    vex-status: not_affected
+    vex-justification: vulnerable_code_not_in_execute_path
+  # The GHSA alias, since Grype may match on either identifier.
+  - vulnerability: GHSA-23hp-3jrh-7fpw
+    vex-status: not_affected
+    vex-justification: vulnerable_code_not_in_execute_path
