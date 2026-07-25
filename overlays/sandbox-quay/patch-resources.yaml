@@ -68,7 +68,16 @@ kind: Deployment
 metadata:
   name: ais-relay
 spec:
-  replicas: 0
+  # Was 0 to save Sandbox memory. With the roomier quota (30Gi requests, not
+  # 7Gi) there is no reason to keep it down — running it unlocks the maritime,
+  # Hormuz, and chokepoint-rate panels. It inherits AISSTREAM_API_KEY,
+  # ACLED_EMAIL, and ACLED_PASSWORD from the worldmonitor-apikeys secret via the
+  # base's envFrom, so no env plumbing is added here.
+  #
+  # IMPORTANT: the relay hard-exits without AISSTREAM_API_KEY. Deploy the key
+  # (./deploy.sh -e AISSTREAM_API_KEY=...) before or with this, or the pod
+  # CrashLoopBackOffs. That is a missing-config failure, not a broken image.
+  replicas: 1
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim
