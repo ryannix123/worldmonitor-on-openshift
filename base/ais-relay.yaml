@@ -59,6 +59,15 @@ spec:
                 secretKeyRef:
                   name: worldmonitor-relay
                   key: RELAY_SHARED_SECRET
+            # The CII warm-ping authenticates the relay to the app API with
+            # WORLDMONITOR_RELAY_KEY. It must hold the SAME value on the relay
+            # and the app, or the ping 401s and Country Instability never seeds.
+            # Sourced from the same secret so both sides agree by construction.
+            - name: WORLDMONITOR_RELAY_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: worldmonitor-relay
+                  key: RELAY_SHARED_SECRET
             - name: RELAY_AUTH_HEADER
               value: "x-relay-key"
           readinessProbe:

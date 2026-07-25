@@ -65,6 +65,14 @@ spec:
               value: "true"
             - name: WS_RELAY_URL
               value: "http://ais-relay:3004"
+            # Counterpart to the relay's WORLDMONITOR_RELAY_KEY — the app API
+            # validates the relay's CII warm-ping against this value. Same secret
+            # key on both sides so they always match.
+            - name: WORLDMONITOR_RELAY_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: worldmonitor-relay
+                  key: RELAY_SHARED_SECRET
             - name: LOCAL_API_PORT
               value: "46123"
             - name: LOCAL_API_MODE
