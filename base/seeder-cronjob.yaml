@@ -1,0 +1,110 @@
+---
+# Seeder CronJob
+#
+# The image ships ~156 standalone `scripts/seed-*.mjs` seeders plus
+# `scripts/run-seeders.sh` to drive them, but nothing in the container ever
+# invokes the runner. The relay runs ~35 seeders inline on its own loops; the
+# rest are meant to be driven externally (upstream does this with Railway
+# cron). In a self-hosted deployment that scheduler simply does not exist, so
+# 120+ seeders never run and their panels render as "no data" — even when the
+# required API keys are present.
+#
+# This CronJob is that missing scheduler. run-seeders.sh already does the right
+# thing: it caps each seeder at SEED_TIMEOUT, and seeders lacking an API key
+# self-report as SKIP rather than failing the run. So running the full set is
+# safe — the ones you have keys for populate, the rest skip quietly.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: worldmonitor-seeders
+  labels:
+    app.kubernetes.io/name: worldmonitor-seeders
+    app.kubernetes.io/component: seeder
+    app.kubernetes.io/part-of: worldmonitor
+spec:
+  # Hourly. Most panel TTLs are 1–3h, so this keeps data fresh without
+  # hammering upstream APIs. Slow reference seeders that only change daily are
+  # cheap to re-run and will mostly hit their own freshness guards.
+  schedule: "17 * * * *"
+  # Never overlap: a run that outlives the hour must not stack on the next one.
+  concurrencyPolicy: Forbid
+  # If the cluster was asleep (Sandbox namespaces idle out), don't try to catch
+  # up on missed runs — just resume on the next tick.
+  startingDeadlineSeconds: 300
+  successfulJobsHistoryLimit: 2
+  failedJobsHistoryLimit: 2
+  jobTemplate:
+    spec:
+      # Hard ceiling on a run. run-seeders.sh caps each seeder individually;
+      # this bounds the whole pass so a pathological run cannot occupy the
+      # namespace indefinitely.
+      activeDeadlineSeconds: 3600
+      backoffLimit: 0        # don't retry a failed pass; the next tick covers it
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: worldmonitor-seeders
+            app.kubernetes.io/part-of: worldmonitor
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: seeders
+              # Same relay image — it carries the scripts and their deps.
+              image: image-registry.openshift-image-registry.svc:5000/openshift/worldmonitor-ais-relay:latest
+              command: ["sh", "-c", "cd /app && sh scripts/run-seeders.sh"]
+              env:
+                # run-seeders.sh prefers REDIS_TOKEN over UPSTASH_REDIS_REST_TOKEN
+                # and fails loudly without one.
+                - name: REDIS_TOKEN
+                  valueFrom:
+                    secretKeyRef:
+                      name: worldmonitor-redis
+                      key: REDIS_TOKEN
+                - name: UPSTASH_REDIS_REST_URL
+                  value: "http://redis-rest"
+                - name: UPSTASH_REDIS_REST_TOKEN
+                  valueFrom:
+                    secretKeyRef:
+                      name: worldmonitor-redis
+                      key: REDIS_TOKEN
+                - name: UPSTASH_ALLOW_INSECURE_HTTP
+                  value: "true"
+                # Point seeders at this deployment's API rather than
+                # api.worldmonitor.app (same reason as the relay).
+                - name: WM_API_BASE_URL
+                  value: "http://worldmonitor:8080"
+                - name: API_BASE_URL
+                  value: "http://worldmonitor:8080"
+                - name: WM_INTERNAL_API_BASE
+                  value: "http://worldmonitor:8080"
+                - name: RELAY_URL
+                  value: "http://ais-relay:3004"
+                - name: WORLDMONITOR_RELAY_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: worldmonitor-relay
+                      key: WORLDMONITOR_RELAY_KEY
+                # Per-seeder cap (seconds). Bundles self-bound and are exempt.
+                - name: SEED_TIMEOUT
+                  value: "600"
+              envFrom:
+                # Provider API keys. Seeders without their key self-skip.
+                - secretRef:
+                    name: worldmonitor-apikeys
+                    optional: true
+                - configMapRef:
+                    name: worldmonitor-config
+              resources:
+                requests:
+                  cpu: 100m
+                  memory: 512Mi
+                limits:
+                  cpu: "1"
+                  memory: 2Gi
+              securityContext:
+                allowPrivilegeEscalation: false
+                runAsNonRoot: true
+                capabilities:
+                  drop: ["ALL"]
+                seccompProfile:
+                  type: RuntimeDefault

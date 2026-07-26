@@ -7,6 +7,7 @@ resources:
   - redis-rest.yaml
   - ais-relay.yaml
   - worldmonitor.yaml
+  - seeder-cronjob.yaml
   - networkpolicy.yaml
 
 labels:
