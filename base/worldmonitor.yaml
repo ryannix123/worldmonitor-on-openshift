@@ -76,6 +76,16 @@ spec:
                 secretKeyRef:
                   name: worldmonitor-relay
                   key: WORLDMONITOR_RELAY_KEY
+            # Signs the wm-session cookie. The browser has no API key, so
+            # key-gated endpoints (get-risk-scores / CII, cable-health) reject
+            # it with 401 "API key required" unless the app can mint a session.
+            # Unset = those panels render UNAVAILABLE even though the API
+            # computes the data correctly.
+            - name: WM_SESSION_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: worldmonitor-relay
+                  key: WM_SESSION_SECRET
             - name: LOCAL_API_PORT
               value: "46123"
             - name: LOCAL_API_MODE

@@ -191,6 +191,10 @@ else
     # WORLDMONITOR_VALID_KEYS; the relay presents it as X-WorldMonitor-Key.
     # wm_ prefix matches upstream's documented generation format.
     echo "WORLDMONITOR_RELAY_KEY=wm_$(openssl rand -hex 24)"
+    # Signs the lightweight wm-session cookie. Without it the app cannot issue
+    # a browser session, so key-gated panels (Country Instability, etc.) return
+    # 401 "API key required" to the browser and render as UNAVAILABLE.
+    echo "WM_SESSION_SECRET=$(openssl rand -hex 32)"
   } > "${SECRETS}/relay.env"
 fi
 
