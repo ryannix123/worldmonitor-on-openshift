@@ -67,7 +67,20 @@ spec:
               valueFrom:
                 secretKeyRef:
                   name: worldmonitor-relay
-                  key: RELAY_SHARED_SECRET
+                  key: WORLDMONITOR_RELAY_KEY
+            # Redirects the relay's hardcoded api.worldmonitor.app warm-ping and
+            # RPC targets at this deployment's own API (see the shim in
+            # Containerfile.ubi10-relay). Without it those calls hit upstream's
+            # production gateway and 401.
+            - name: WM_INTERNAL_API_BASE
+              value: "http://worldmonitor:8080"
+            # Seed/verify scripts read these; unset means upstream production.
+            - name: WM_API_BASE_URL
+              value: "http://worldmonitor:8080"
+            - name: API_BASE_URL
+              value: "http://worldmonitor:8080"
+            - name: RELAY_URL
+              value: "http://ais-relay:3004"
             - name: RELAY_AUTH_HEADER
               value: "x-relay-key"
           readinessProbe:

@@ -62,6 +62,43 @@ COPY package.json ./
 # Arbitrary-UID: group-0 ownership + group-writable on the app dir.
 RUN chgrp -R 0 /app && chmod -R g=u /app
 
+# --- Self-hosted API base redirect ------------------------------------------
+# The relay hardcodes its warm-ping / RPC targets to api.worldmonitor.app with
+# no env override (CII_RPC_URL, CHOKEPOINT_RPC_URL, CABLE_HEALTH_RPC_URL,
+# SERVICE_STATUSES_RPC_URL). In a self-hosted deployment those calls hit
+# upstream's production gateway and 401 — the relay key is validated against
+# THEIR WORLDMONITOR_RELAY_KEY, not yours.
+#
+# This preload shim rewrites the origin at the fetch layer, so it catches
+# string literals, template literals, and URL/Request objects alike without
+# patching upstream source. It is a strict no-op when WM_INTERNAL_API_BASE is
+# unset, so the default behavior is identical to upstream.
+#
+# Written inline (printf, not COPY) so the build has no external file
+# dependency that could go missing from the build context.
+RUN printf '%s\n' \
+  "const TARGET = 'https://api.worldmonitor.app';" \
+  "const BASE = process.env.WM_INTERNAL_API_BASE;" \
+  "if (BASE) {" \
+  "  const orig = globalThis.fetch;" \
+  "  globalThis.fetch = function (input, init) {" \
+  "    try {" \
+  "      if (typeof input === 'string' && input.startsWith(TARGET)) {" \
+  "        input = BASE + input.slice(TARGET.length);" \
+  "      } else if (input instanceof URL && input.origin === TARGET) {" \
+  "        input = new URL(input.pathname + input.search + input.hash, BASE);" \
+  "      } else if (input && typeof input === 'object' && typeof input.url === 'string' && input.url.startsWith(TARGET)) {" \
+  "        input = new Request(BASE + input.url.slice(TARGET.length), input);" \
+  "      }" \
+  "    } catch {}" \
+  "    return orig.call(this, input, init);" \
+  "  };" \
+  "  console.log('[wm-shim] rewriting ' + TARGET + ' -> ' + BASE);" \
+  "}" \
+  > /app/wm-api-base-shim.cjs \
+ && chgrp 0 /app/wm-api-base-shim.cjs && chmod g=u /app/wm-api-base-shim.cjs \
+ && node --check /app/wm-api-base-shim.cjs
+
 USER 1001
 
 EXPOSE 3004
@@ -75,4 +112,4 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
 
 # scripts/ais-relay.cjs reads PORT (default 3004 in the compose) and the
 # AISSTREAM/OPENSKY/relay-secret env vars. The Deployment provides those.
-CMD ["node", "scripts/ais-relay.cjs"]
+CMD ["node", "--require", "/app/wm-api-base-shim.cjs", "scripts/ais-relay.cjs"]

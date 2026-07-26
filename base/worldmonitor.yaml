@@ -68,11 +68,14 @@ spec:
             # Counterpart to the relay's WORLDMONITOR_RELAY_KEY — the app API
             # validates the relay's CII warm-ping against this value. Same secret
             # key on both sides so they always match.
-            - name: WORLDMONITOR_RELAY_KEY
+            # The app validates the relay's X-WorldMonitor-Key header against
+            # this allowlist. Same secret value on both sides, so the relay's
+            # warm-pings authenticate. Without it: 401 "API key required".
+            - name: WORLDMONITOR_VALID_KEYS
               valueFrom:
                 secretKeyRef:
                   name: worldmonitor-relay
-                  key: RELAY_SHARED_SECRET
+                  key: WORLDMONITOR_RELAY_KEY
             - name: LOCAL_API_PORT
               value: "46123"
             - name: LOCAL_API_MODE

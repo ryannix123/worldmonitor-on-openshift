@@ -185,7 +185,13 @@ if [[ -f "${SECRETS}/relay.env" ]] && ! grep -q REPLACE_ME "${SECRETS}/relay.env
   info "Relay secret already generated"
 else
   info "Generating relay shared secret"
-  echo "RELAY_SHARED_SECRET=$(openssl rand -hex 32)" > "${SECRETS}/relay.env"
+  {
+    echo "RELAY_SHARED_SECRET=$(openssl rand -hex 32)"
+    # Dedicated relay->app warm-ping key. The app allowlists it via
+    # WORLDMONITOR_VALID_KEYS; the relay presents it as X-WorldMonitor-Key.
+    # wm_ prefix matches upstream's documented generation format.
+    echo "WORLDMONITOR_RELAY_KEY=wm_$(openssl rand -hex 24)"
+  } > "${SECRETS}/relay.env"
 fi
 
 # Provider keys are optional — every feature degrades gracefully without them.
