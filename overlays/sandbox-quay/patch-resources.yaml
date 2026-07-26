@@ -11,6 +11,11 @@ spec:
     spec:
       containers:
         - name: worldmonitor
+          # Tags here are moving (:latest / :relay-latest). Kubernetes only
+          # force-pulls the literal tag "latest", so "relay-latest" would
+          # default to IfNotPresent and silently serve a stale cached image
+          # after a CI rebuild. Always-pull keeps the deploy honest.
+          imagePullPolicy: Always
           resources:
             requests:
               cpu: 100m
@@ -78,6 +83,14 @@ spec:
   # (./deploy.sh -e AISSTREAM_API_KEY=...) before or with this, or the pod
   # CrashLoopBackOffs. That is a missing-config failure, not a broken image.
   replicas: 1
+  template:
+    spec:
+      containers:
+        - name: relay
+          # See the note on the worldmonitor container: "relay-latest" is a
+          # moving tag but is not the literal "latest", so without this it
+          # defaults to IfNotPresent and can serve a stale cached image.
+          imagePullPolicy: Always
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim

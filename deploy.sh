@@ -195,7 +195,31 @@ else
 fi
 
 # Provider keys are optional — every feature degrades gracefully without them.
-[[ -f "${SECRETS}/apikeys.env" ]] || cat > "${SECRETS}/apikeys.env" <<'EOF'
+#
+# IMPORTANT: secrets/ is gitignored, so it exists only locally and is wiped by
+# anything that re-extracts the repo. Creating a blank apikeys.env here and
+# applying it would silently overwrite populated keys already in the cluster —
+# which is exactly how a working deployment loses its credentials and the relay
+# starts CrashLoopBackOff'ing on a missing AISSTREAM_API_KEY.
+#
+# So when the local file is absent, hydrate it from the live Secret first.
+if [[ ! -f "${SECRETS}/apikeys.env" ]]; then
+  if oc get secret worldmonitor-apikeys -n "$NS" >/dev/null 2>&1; then
+    info "apikeys.env missing locally — restoring from the cluster Secret"
+    # Reconstruct KEY=VALUE lines from the existing Secret so nothing is lost.
+    oc get secret worldmonitor-apikeys -n "$NS" -o json \
+      | python3 -c "
+import base64, json, sys
+data = json.load(sys.stdin).get('data', {}) or {}
+for k in sorted(data):
+    try: v = base64.b64decode(data[k]).decode()
+    except Exception: v = ''
+    print(f'{k}={v}')
+" > "${SECRETS}/apikeys.env"
+    RESTORED="$(grep -c '=..*' "${SECRETS}/apikeys.env" 2>/dev/null || echo 0)"
+    info "restored ${RESTORED} populated key(s) from the cluster"
+  else
+    cat > "${SECRETS}/apikeys.env" <<'EOF'
 # Optional. Each key enables one feature; the dashboard runs without any of them.
 GROQ_API_KEY=
 FINNHUB_API_KEY=
@@ -206,6 +230,8 @@ AISSTREAM_API_KEY=
 ACLED_EMAIL=
 ACLED_PASSWORD=
 EOF
+  fi
+fi
 
 # Merge any -e / -E keys into apikeys.env. Existing keys are replaced in place
 # rather than appended, so the file stays readable after repeated runs.
