@@ -62,7 +62,9 @@ envsubst '$LOCAL_API_PORT $LOCAL_API_TOKEN' \
 
 # --- Start the sidecar ------------------------------------------------------
 log "starting sidecar on 127.0.0.1:${LOCAL_API_PORT}"
-node /app/local-api-server.mjs &
+# --require the SRH compatibility shim: the sidecar's Redis reads use a
+# path-style GET that SRH does not implement (see Containerfile.ubi10).
+node --require /app/srh-compat-shim.cjs /app/local-api-server.mjs &
 SIDECAR_PID=$!
 
 # Fail fast rather than letting nginx serve 502s for the pod's whole lifetime.

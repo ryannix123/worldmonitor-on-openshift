@@ -181,22 +181,38 @@ SRH_CONNECTION_STRING=redis://:${RP}@redis:6379
 EOF
 fi
 
-if [[ -f "${SECRETS}/relay.env" ]] && ! grep -q REPLACE_ME "${SECRETS}/relay.env"; then
-  info "Relay secret already generated"
-else
-  info "Generating relay shared secret"
-  {
-    echo "RELAY_SHARED_SECRET=$(openssl rand -hex 32)"
-    # Dedicated relay->app warm-ping key. The app allowlists it via
-    # WORLDMONITOR_VALID_KEYS; the relay presents it as X-WorldMonitor-Key.
-    # wm_ prefix matches upstream's documented generation format.
-    echo "WORLDMONITOR_RELAY_KEY=wm_$(openssl rand -hex 24)"
-    # Signs the lightweight wm-session cookie. Without it the app cannot issue
-    # a browser session, so key-gated panels (Country Instability, etc.) return
-    # 401 "API key required" to the browser and render as UNAVAILABLE.
-    echo "WM_SESSION_SECRET=$(openssl rand -hex 32)"
-  } > "${SECRETS}/relay.env"
-fi
+# Generated internal secrets. Each is APPENDED only if absent, rather than
+# treating the file as all-or-nothing: an existing relay.env from an older
+# revision would otherwise be left untouched and any newly-required key would
+# be missing from the Secret, so the app pod fails with
+# CreateContainerConfigError on an unresolvable secretKeyRef.
+touch "${SECRETS}/relay.env"
+[[ -s "${SECRETS}/relay.env" ]] && grep -q REPLACE_ME "${SECRETS}/relay.env" && : > "${SECRETS}/relay.env"
+
+ensure_secret() {   # ensure_secret KEY VALUE DESCRIPTION
+  local key="$1" val="$2" desc="$3"
+  if grep -qE "^${key}=..*" "${SECRETS}/relay.env" 2>/dev/null; then
+    return 0
+  fi
+  # Drop any empty-valued line for this key, then append a real one.
+  if [[ -s "${SECRETS}/relay.env" ]]; then
+    grep -vE "^${key}=" "${SECRETS}/relay.env" > "${SECRETS}/relay.env.tmp" || true
+    mv "${SECRETS}/relay.env.tmp" "${SECRETS}/relay.env"
+  fi
+  printf '%s=%s\n' "$key" "$val" >> "${SECRETS}/relay.env"
+  info "Generated ${key} (${desc})"
+}
+
+# Relay <-> app shared secret for the relay's own auth header.
+ensure_secret RELAY_SHARED_SECRET "$(openssl rand -hex 32)" "relay auth"
+# Dedicated relay->app warm-ping key. The app allowlists it via
+# WORLDMONITOR_VALID_KEYS; the relay presents it as X-WorldMonitor-Key.
+# wm_ prefix matches upstream's documented generation format.
+ensure_secret WORLDMONITOR_RELAY_KEY "wm_$(openssl rand -hex 24)" "warm-ping key"
+# Signs the lightweight wm-session cookie. Without it the app cannot issue a
+# browser session, so key-gated panels (Country Instability, cable health)
+# return 401 "API key required" to the browser and render as UNAVAILABLE.
+ensure_secret WM_SESSION_SECRET "$(openssl rand -hex 32)" "browser session signing"
 
 # Provider keys are optional — every feature degrades gracefully without them.
 #

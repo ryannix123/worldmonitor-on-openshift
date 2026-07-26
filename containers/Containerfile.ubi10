@@ -105,6 +105,48 @@ COPY --from=builder /build/data ./data
 COPY --from=builder /build/dist /usr/share/nginx/html
 
 COPY docker/nginx.conf /etc/nginx/nginx.conf.template
+# --- SRH path-style Redis GET compatibility ---------------------------------
+# readCachedJson() reads Redis with a PATH-style request:
+#     fetch(`${UPSTASH_REDIS_REST_URL}/get/${encodeURIComponent(key)}`)
+# Upstash's hosted REST API serves that form. The self-hosted stand-in
+# (serverless-redis-http / SRH) implements ONLY the POST-command form and
+# returns 404 "SRH: Endpoint not found" for every path-style route — verified
+# against /get/<key>, /dbsize and /ping.
+#
+# readCachedJson treats that 404 as a cache miss and its callers fall back to
+# empty results, so every Redis-backed panel renders as "no data" even though
+# the seeders wrote the data correctly. Security Advisories was the clearest
+# case: 219 advisories in Redis, panel showing 0.
+#
+# This preload rewrites path-style GETs against the Redis REST base into the
+# POST command form SRH accepts. Non-Redis fetches and existing POSTs are
+# untouched, and the whole shim is a no-op if UPSTASH_REDIS_REST_URL is unset.
+RUN printf '%s\n' \
+  "const BASE = process.env.UPSTASH_REDIS_REST_URL;" \
+  "const TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN;" \
+  "if (BASE) {" \
+  "  const orig = globalThis.fetch;" \
+  "  const base = BASE.replace(/\\/+\$/, '');" \
+  "  globalThis.fetch = function (input, init) {" \
+  "    try {" \
+  "      const url = typeof input === 'string' ? input : (input instanceof URL ? input.href : (input && typeof input.url === 'string' ? input.url : null));" \
+  "      if (url && url.startsWith(base + '/')) {" \
+  "        const parts = url.slice(base.length + 1).split('/').filter(Boolean).map(decodeURIComponent);" \
+  "        const method = ((init && init.method) || 'GET').toUpperCase();" \
+  "        if (method === 'GET' && parts.length) {" \
+  "          const auth = (init && init.headers && (init.headers.Authorization || init.headers.authorization)) || (TOKEN ? 'Bearer ' + TOKEN : undefined);" \
+  "          return orig.call(this, base, { method: 'POST', headers: Object.assign({ 'Content-Type': 'application/json' }, auth ? { Authorization: auth } : {}), body: JSON.stringify(parts), signal: init && init.signal });" \
+  "        }" \
+  "      }" \
+  "    } catch {}" \
+  "    return orig.call(this, input, init);" \
+  "  };" \
+  "  console.log('[srh-shim] path-style Redis GETs -> POST command form');" \
+  "}" \
+  > /app/srh-compat-shim.cjs \
+ && chgrp 0 /app/srh-compat-shim.cjs && chmod g=u /app/srh-compat-shim.cjs \
+ && node --check /app/srh-compat-shim.cjs
+
 COPY containers/entrypoint.sh /app/entrypoint.sh
 
 # nginx.conf sets `pid /tmp/nginx.pid` and puts every temp path under /tmp, so
