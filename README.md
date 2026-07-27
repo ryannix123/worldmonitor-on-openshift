@@ -74,6 +74,41 @@ and repeatably:
 - **Claude wired in.** Live LLM-assisted briefs via OpenRouter, with a preflight
   that verifies the model is actually reachable rather than silently falling back.
 
+---
+
+## 🆓 Red Hat Developer Sandbox
+
+The [Red Hat Developer Sandbox](https://developers.redhat.com/developer-sandbox) is a **free** OpenShift environment perfect for testing Nextcloud:
+
+- **Free tier** — No credit card required, no setup, no cluster to install
+- **Generous resources** — 3 CPU cores, 14 GB RAM, and 40 GB storage per user — plenty to run this entire stack
+- **Latest OpenShift** — Always running a recent version (4.18+)
+- **Auto-hibernation** — Deployments scale to zero after 12 hours of inactivity
+
+> 💡 **New to OpenShift?** The Sandbox is the fastest way to try the platform — you get a real, current OpenShift cluster in your browser in minutes, with zero install. This entire Nextcloud stack is designed to deploy there on the free tier. [Grab a free Sandbox](https://developers.redhat.com/developer-sandbox) and run `sh deploy.sh`.
+
+Confirm your own namespace's quota at any time:
+
+```bash
+oc describe resourcequota
+```
+
+### Waking Up Your Deployment
+
+When you return after the sandbox has hibernated, your pods will be scaled down. Run this command to bring everything back up:
+
+```bash
+# Scale all deployments back to 1 replica
+oc scale deployment --all --replicas=1
+
+# Or specify your namespace explicitly
+oc scale deployment --all --replicas=1 -n $(oc project -q)
+```
+
+Your data persists in the PVCs — only the pods are stopped during hibernation.
+
+---
+
 ## Layout
 
 ```
