@@ -39,12 +39,19 @@ jobs:
       - id: pin
         run: |
           set -euo pipefail
+          # Precedence: explicit dispatch input > pinned SHA > branch ref.
+          #
+          # UPSTREAM_SHA is the whole point of pinning: the nightly must build a
+          # known-good commit, not whatever landed on main overnight. Reading
+          # UPSTREAM_REF first defeated that — upstream deleting the
+          # `build:content-corpus` npm script broke the nightly directly instead
+          # of surfacing as a reviewed upstream-sync PR.
           if [ -n "${{ inputs.ref }}" ]; then
             REF="${{ inputs.ref }}"
           elif [ -f upstream.env ]; then
             # shellcheck disable=SC1091
             . ./upstream.env
-            REF="${UPSTREAM_REF:-main}"
+            REF="${UPSTREAM_SHA:-${UPSTREAM_REF:-main}}"
           else
             REF=main
           fi

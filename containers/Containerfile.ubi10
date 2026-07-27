@@ -46,10 +46,16 @@ COPY . .
 
 RUN node docker/build-handlers.mjs
 
-RUN npm run build:crawlable-corpus \
- && npm run build:content-corpus \
- && npx tsc \
- && npx vite build
+# Upstream removed `build:content-corpus` (present when this was written, gone
+# by 2026-07-27 — the nightly caught it as npm "Missing script"). The crawlable
+# corpus step survives; the content corpus was either folded into the variant
+# build or dropped. The corpus step is made tolerant so a future rename degrades
+# to a warning rather than failing the image: it is a pre-render/SEO artifact,
+# not required for the dashboard to run.
+RUN npm run build:crawlable-corpus || echo "WARN: build:crawlable-corpus unavailable, continuing"
+
+# These ARE load-bearing — a failure here must fail the build.
+RUN npx tsc && npx vite build
 
 # ── Stage 2: Runtime dependencies ───────────────────────────────────────────
 FROM ${NODE_BUILDER} AS runtime-deps
