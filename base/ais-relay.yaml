@@ -7,7 +7,9 @@ metadata:
     app.kubernetes.io/name: ais-relay
     app.kubernetes.io/component: relay
     app.kubernetes.io/part-of: worldmonitor
+    app.openshift.io/runtime: nodejs
   annotations:
+    app.openshift.io/vcs-uri: https://github.com/ryannix123/worldmonitor-on-openshift
     # See the note in worldmonitor.yaml — bare ImageStream tags do not resolve
     # for Deployments; the trigger controller rewrites this field instead.
     image.openshift.io/triggers: >-

@@ -7,7 +7,13 @@ metadata:
     app.kubernetes.io/name: worldmonitor
     app.kubernetes.io/component: frontend
     app.kubernetes.io/part-of: worldmonitor
+    # Topology icon. The console matches this against a PREDEFINED icon set
+    # (runtime first, then app.kubernetes.io/name) — arbitrary image URLs are
+    # not supported, and an unrecognized value renders no icon at all.
+    app.openshift.io/runtime: nodejs
   annotations:
+    # Makes the topology node link to the source repo.
+    app.openshift.io/vcs-uri: https://github.com/ryannix123/worldmonitor-on-openshift
     # OpenShift's image-trigger controller resolves this ImageStreamTag to the
     # fully-qualified internal registry path and writes it into the container's
     # image field — in whatever namespace this lands in. It also redeploys
