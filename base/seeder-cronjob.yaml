@@ -51,6 +51,9 @@ spec:
             - name: seeders
               # Same relay image — it carries the scripts and their deps.
               image: image-registry.openshift-image-registry.svc:5000/openshift/worldmonitor-ais-relay:latest
+              # NODE_OPTIONS preloads the SRH compatibility shim for every
+              # seeder the runner spawns — they read Redis through the same
+              # path-style GET that SRH does not implement.
               command: ["sh", "-c", "cd /app && sh scripts/run-seeders.sh"]
               env:
                 # run-seeders.sh prefers REDIS_TOKEN over UPSTASH_REDIS_REST_TOKEN
@@ -87,6 +90,8 @@ spec:
                 # Per-seeder cap (seconds). Bundles self-bound and are exempt.
                 - name: SEED_TIMEOUT
                   value: "600"
+                - name: NODE_OPTIONS
+                  value: "--require /app/srh-compat-shim.cjs"
               envFrom:
                 # Provider API keys. Seeders without their key self-skip.
                 - secretRef:

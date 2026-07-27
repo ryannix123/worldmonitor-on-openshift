@@ -43,18 +43,18 @@ spec:
             - --requirepass
             - $(REDIS_PASSWORD)
             - --maxmemory
-            - 96mb
+            - 512mb
             - --maxmemory-policy
             - allkeys-lru
             - --dir
             - /data
           resources:
             requests:
-              cpu: 25m
-              memory: 64Mi
+              cpu: 50m
+              memory: 128Mi
             limits:
-              cpu: 200m
-              memory: 160Mi
+              cpu: 500m
+              memory: 768Mi
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -67,11 +67,16 @@ spec:
         - name: srh
           resources:
             requests:
-              cpu: 25m
-              memory: 64Mi
+              cpu: 50m
+              memory: 128Mi
             limits:
-              cpu: 200m
-              memory: 160Mi
+              cpu: 500m
+              # 160Mi here was sized against an assumed 7Gi namespace quota;
+              # the real quota is 30Gi. A full run-seeders.sh pass (156 seeders
+              # back to back) OOMKilled SRH five times, and every seeder after
+              # the crash failed lock acquisition — the failures ran strictly
+              # alphabetically from the crash point, which is the tell.
+              memory: 768Mi
 ---
 # The AIS relay holds a live websocket to aisstream.io and a large in-memory
 # vessel store. It is the single hungriest component and the least useful
