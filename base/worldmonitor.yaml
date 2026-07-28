@@ -14,6 +14,12 @@ metadata:
   annotations:
     # Makes the topology node link to the source repo.
     app.openshift.io/vcs-uri: https://github.com/ryannix123/worldmonitor-on-openshift
+    # Same pattern as the openemr-on-openshift deployment. Note that Red Hat's
+    # Topology docs only document the predefined icon set matched via the
+    # runtime label — custom-icon is not in them, so treat it as best-effort:
+    # if the console honors it you get the logo, otherwise the nodejs runtime
+    # icon above is the fallback and nothing breaks either way.
+    app.openshift.io/custom-icon: "https://cdn-1.webcatalog.io/catalog/world-monitor/world-monitor-icon-filled-256.png?v=1771821726882"
     # OpenShift's image-trigger controller resolves this ImageStreamTag to the
     # fully-qualified internal registry path and writes it into the container's
     # image field — in whatever namespace this lands in. It also redeploys

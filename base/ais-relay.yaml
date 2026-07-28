@@ -10,6 +10,7 @@ metadata:
     app.openshift.io/runtime: nodejs
   annotations:
     app.openshift.io/vcs-uri: https://github.com/ryannix123/worldmonitor-on-openshift
+    app.openshift.io/custom-icon: "https://cdn-1.webcatalog.io/catalog/world-monitor/world-monitor-icon-filled-256.png?v=1771821726882"
     # See the note in worldmonitor.yaml — bare ImageStream tags do not resolve
     # for Deployments; the trigger controller rewrites this field instead.
     image.openshift.io/triggers: >-
