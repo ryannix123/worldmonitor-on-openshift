@@ -8,6 +8,12 @@
 # UNCONDITIONAL ignore (bare ID), not a vex-status rule: a vex-status rule only
 # fires when a matching --vex document is also loaded, which this pipeline does
 # not do, so it would be inert. A plain-ID ignore suppresses the match outright.
+
 ignore:
-  - vulnerability: CVE-2026-59873
-  - vulnerability: GHSA-23hp-3jrh-7fpw
+  # CVE-2026-51302 (sqlite-libs, Critical) — no Red Hat fix available as of
+  # 2026-07-29. sqlite-libs is pulled in transitively by rpm/dnf tooling in
+  # the UBI base; neither the dashboard nor the AIS relay opens a SQLite
+  # database at runtime. EPSS 0.2% (15th pct). Re-evaluate when RHSA lands.
+  - vulnerability: CVE-2026-51302
+    package:
+      name: sqlite-libs
