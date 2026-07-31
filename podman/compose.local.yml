@@ -1,0 +1,126 @@
+# =============================================================================
+# World Monitor — self-contained local stack for Apple Silicon
+# =============================================================================
+# Pulls prebuilt arm64 images from Quay — nothing is built on this machine.
+# AI briefs run through OpenRouter (one key). Everything else is self-hosted
+# in these four containers.
+#
+#   Start:  podman compose -f compose.tanner.yml up -d
+#   Open:   http://localhost:3000
+#   Stop:   podman compose -f compose.tanner.yml down
+#
+# Reads secrets from a file named .env in this same directory.
+# =============================================================================
+services:
+  worldmonitor:
+    image: quay.io/ryan_nix/worldmonitor-openshift:latest
+    platform: linux/arm64
+    pull_policy: always
+    ports:
+      - "3000:8080"
+    environment:
+      # --- AI via OpenRouter (the route to Claude) --------------------------
+      # Mirrors overlays/*/patch-llm-openrouter.yaml. The AI panels (synthesis,
+      # briefs, Country Instability, Strategic Risk) are the REASONING profile —
+      # LLM_TOOL_PROVIDER alone does not drive them, which is the usual reason
+      # those panels sit UNAVAILABLE.
+      OPENROUTER_API_KEY: "${OPENROUTER_API_KEY:-}"
+      # Reasoning profile — synthesis, briefs, analyst
+      LLM_REASONING_PROVIDER: "openrouter"
+      LLM_REASONING_MODEL: "anthropic/claude-sonnet-4.5"
+      # Tool profile — cheap extraction / parsing
+      LLM_TOOL_PROVIDER: "openrouter"
+      LLM_TOOL_MODEL: "anthropic/claude-haiku-4.5"
+      # Forecast stage routing
+      FORECAST_LLM_PROVIDER_ORDER: "openrouter"
+      FORECAST_LLM_MODEL_OPENROUTER: "anthropic/claude-haiku-4.5"
+      # Per-call telemetry so you can see if Claude calls succeed or fall back
+      USAGE_TELEMETRY: "1"
+      # --- AI brief pipelines ----------------------------------------------
+      # OFF by default in the OpenShift patch because these fan LLM calls out
+      # across 500+ feeds and 31 countries on a cron, and the app has NO spend
+      # ceiling for LLM calls. Enabled here as coherent pairs (digest+cron,
+      # brief-compose+brief-llm) and routed to Haiku so the high-volume calls
+      # stay cheap; Sonnet is reserved for the reasoning profile above.
+      # AI_IMPACT_ENABLED (the heaviest fan-out) is left OFF until you've seen
+      # a day of real cost in the USAGE_TELEMETRY output.
+      AI_DIGEST_ENABLED: "1"
+      DIGEST_CRON_ENABLED: "1"
+      BRIEF_COMPOSE_ENABLED: "1"
+      BRIEF_LLM_ENABLED: "1"
+      # Pin the brief/digest stages to Haiku regardless of the reasoning model.
+      BRIEF_LLM_MODEL: "anthropic/claude-haiku-4.5"
+      DIGEST_LLM_MODEL: "anthropic/claude-haiku-4.5"
+      # Heaviest fan-out — impact/escalation synthesis. Enabled with $8+ of
+      # OpenRouter headroom and USAGE_TELEMETRY on so spend is visible; flip to
+      # "0" and restart if the meter moves faster than it's worth.
+      AI_IMPACT_ENABLED: "1"
+      IMPACT_LLM_MODEL: "anthropic/claude-haiku-4.5"
+      # --- Cache proxy ------------------------------------------------------
+      UPSTASH_REDIS_REST_URL: "http://redis-rest:8080"
+      UPSTASH_REDIS_REST_TOKEN: "${REDIS_TOKEN}"
+      UPSTASH_ALLOW_INSECURE_HTTP: "true"
+      LOCAL_API_MODE: "docker"
+      LOCAL_API_CLOUD_FALLBACK: "false"
+      # --- Browser session auth --------------------------------------------
+      # Without these the app can't issue a wm-session cookie, so key-gated
+      # endpoints (risk scores, theater posture, Country Instability, AI
+      # Insights) return 401 and the panels render UNAVAILABLE. On OpenShift
+      # these come from the worldmonitor-relay Secret; here they're generated
+      # into .env by deploy.sh, same as the Redis credentials.
+      WM_SESSION_SECRET: "${WM_SESSION_SECRET}"
+      WORLDMONITOR_VALID_KEYS: "${WORLDMONITOR_VALID_KEYS}"
+    depends_on:
+      redis-rest:
+        condition: service_started
+      ais-relay:
+        condition: service_started
+    restart: unless-stopped
+
+  ais-relay:
+    image: quay.io/ryan_nix/worldmonitor-openshift:relay-latest
+    platform: linux/arm64
+    pull_policy: always
+    environment:
+      # The relay refuses to start without this (FATAL). Generated into .env by
+      # deploy.sh; on OpenShift it comes from the worldmonitor-relay Secret.
+      RELAY_SHARED_SECRET: "${RELAY_SHARED_SECRET}"
+      UPSTASH_REDIS_REST_URL: "http://redis-rest:8080"
+      UPSTASH_REDIS_REST_TOKEN: "${REDIS_TOKEN}"
+      UPSTASH_ALLOW_INSECURE_HTTP: "true"
+      # Data source keys — all optional, panels degrade gracefully without them.
+      UCDP_ACCESS_TOKEN: "${UCDP_ACCESS_TOKEN:-}"
+      AISSTREAM_API_KEY: "${AISSTREAM_API_KEY:-}"
+      ACLED_EMAIL: "${ACLED_EMAIL:-}"
+      ACLED_PASSWORD: "${ACLED_PASSWORD:-}"
+      PORT: "3004"
+    depends_on:
+      redis-rest:
+        condition: service_started
+    restart: unless-stopped
+
+  redis:
+    image: docker.io/redis:8-alpine
+    command: >
+      redis-server
+      --requirepass "${REDIS_PASSWORD}"
+      --maxmemory 256mb
+      --maxmemory-policy allkeys-lru
+    volumes:
+      - redis-data:/data
+    restart: unless-stopped
+
+  redis-rest:
+    image: quay.io/ryan_nix/worldmonitor-openshift:redis-rest-latest
+    platform: linux/arm64
+    pull_policy: always
+    environment:
+      PORT: "8080"
+      SRH_TOKEN: "${REDIS_TOKEN}"
+      SRH_CONNECTION_STRING: "redis://:${REDIS_PASSWORD}@redis:6379"
+    depends_on:
+      - redis
+    restart: unless-stopped
+
+volumes:
+  redis-data:
