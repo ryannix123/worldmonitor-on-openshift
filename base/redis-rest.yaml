@@ -1,9 +1,20 @@
 ---
-# Serverless Redis HTTP — the Upstash-compatible REST facade the app expects.
-# Upstream builds this from docker/Dockerfile.redis-rest; the upstream SRH
-# image is used directly here so the cluster doesn't need a second BuildConfig.
-# If your docker/Dockerfile.redis-rest pins something different, swap the image
-# and add a matching BuildConfig.
+# Redis REST proxy — the Upstash-compatible facade the app expects.
+#
+# This used to run docker.io/hiett/serverless-redis-http, which implements only
+# the POST command forms of the Upstash REST API (POST /, /pipeline,
+# /multi-exec). The app's readCachedJson() reads via path-style GET
+# (GET /get/<key>), which hiett's SRH answers with 404 "Endpoint not found".
+# The API handlers swallow that as a cache miss and return an empty result, so
+# affected panels rendered "Temporarily unavailable" with no error surfaced
+# anywhere in the app logs — only a bare `[redis] getCachedJson failed: Redis
+# HTTP 404` with no key name.
+#
+# Upstream ships docker/redis-rest-proxy.mjs, which handles GET /{cmd}/{args},
+# POST /, POST /pipeline and POST /multi-exec — the full set the app uses.
+# containers/Containerfile.redis-rest rebuilds it on UBI 10 (upstream's
+# Dockerfile.redis-rest uses node:24-alpine and runs as root, which restricted
+# SCC rejects). Built and pushed by .github/workflows/build.yml.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -26,15 +37,17 @@ spec:
     spec:
       containers:
         - name: srh
-          image: docker.io/hiett/serverless-redis-http:latest
+          image: quay.io/ryan_nix/worldmonitor-openshift:redis-rest-latest
+          # A moving tag needs an explicit pull policy: the default for a
+          # non-:latest-suffixed tag is IfNotPresent, and even with :latest a
+          # cached layer on the node would silently pin an old build.
+          imagePullPolicy: Always
           env:
-            - name: SRH_MODE
-              value: "env"
-            # SRH defaults to port 80, which OpenShift's restricted-v2 SCC
-            # forbids an arbitrary UID from binding (listen() → eacces, and the
-            # Erlang VM crashes at boot before it ever contacts Redis). Move it
-            # to an unprivileged port.
-            - name: SRH_PORT
+            # Upstream's proxy reads PORT (default 80). A non-root arbitrary
+            # UID cannot bind a privileged port, so move it to 8080 to match
+            # the Service's targetPort. SRH_MODE and SRH_PORT were hiett-only
+            # and are ignored here.
+            - name: PORT
               value: "8080"
             - name: SRH_TOKEN
               valueFrom:
@@ -49,6 +62,9 @@ spec:
           ports:
             - name: http
               containerPort: 8080
+          # tcpSocket rather than httpGet: the proxy's GET / welcome route sits
+          # behind the same bearer-token check as every other path, and a probe
+          # cannot present the token without duplicating the Secret here.
           readinessProbe:
             tcpSocket:
               port: http
