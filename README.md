@@ -9,7 +9,6 @@
   <img src="https://img.shields.io/badge/platform-OpenShift-EE0000?logo=redhatopenshift&logoColor=white" alt="OpenShift">
   <img src="https://img.shields.io/badge/arch-amd64%20%7C%20arm64-2dd4bf" alt="Multi-arch">
   <img src="https://img.shields.io/badge/SBOM-SPDX-2dd4bf" alt="SBOM SPDX">
-  <img src="https://img.shields.io/badge/scan-Grype-blueviolet" alt="Grype scanned">
   <img src="https://img.shields.io/badge/license-AGPL--3.0-informational" alt="AGPL-3.0">
 </p>
 
