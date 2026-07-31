@@ -63,16 +63,82 @@ and repeatably:
   silently orphans the sidecar on shutdown; the shell stays PID 1 instead).
 - **Arbitrary-UID clean.** Runs under OpenShift's `restricted-v2` SCC with no
   privileged access — group-0 ownership, no baked-in root.
-- **A real security supply chain.** Multi-arch build, SPDX SBOM per image, Grype
-  scan, `--fail-on critical`. When the pipeline hit a genuine CVSS 9.2 in a
-  transitive dependency, it *failed the build* — and the fix was a documented
-  [VEX not-affected assessment](#on-the-cve-story), not a suppressed warning or
-  a lowered gate.
+- **A real security supply chain.** Multi-arch build, SPDX SBOM per image, and a
+  Grype scan on every build, published to the run summary and retained as an
+  artifact. Images rebuild nightly so base-image patches land without waiting on
+  an upstream release.
 - **Namespace-portable deploy.** Nothing hardcodes a namespace; the same
   overlays run on any cluster the current `oc` context points at, from a free
   Developer Sandbox to a GPU-equipped Single Node OpenShift.
 - **Claude wired in.** Live LLM-assisted briefs via OpenRouter, with a preflight
   that verifies the model is actually reachable rather than silently falling back.
+
+---
+
+## Why deploy World Monitor on OpenShift?
+
+World Monitor is an open-source dashboard that ships a `docker-compose.yml`. You
+*can* run it that way — a VM, four containers, a `.env` file, and `restart:
+unless-stopped`. It works. The reason to put it on OpenShift instead isn't that
+the app needs a Kubernetes distribution; it's that every property you'd
+otherwise have to *remember to configure* becomes something the platform
+*refuses to run without*.
+
+That's the whole argument in one line: **on a VM these are things you intend to
+do; on OpenShift they're things the platform enforces.** The difference between a
+security intention and a security posture.
+
+### Same app, two postures
+
+| Concern | `docker compose` on a VM | This repo on OpenShift |
+|---|---|---|
+| Container user | root, or whatever the image ships | arbitrary non-root UID, enforced by SCC |
+| Redis REST proxy | hiett SRH — path-style GET 404s | upstream proxy, UBI-rebuilt, full command set |
+| Image provenance | whatever's on Docker Hub, unscanned | UBI base, SBOM + Grype per build, nightly rebuild |
+| Access control | host firewall, hand-managed | Route + IP allowlist annotation, edge TLS |
+| Secrets | `.env` on disk, in the compose file | Secret objects, mounted, RBAC-scoped |
+| Recovery when a container dies | `restart: unless-stopped` | rescheduled, probed, rolled out declaratively |
+
+### The layers aren't a checklist — they're nested
+
+Each control assumes the one outside it might fail. A request clears the Route's
+IP allowlist before it reaches anything; the workload can't read a Secret it
+isn't RBAC-bound to; and the SCC forbids the entire pod from running as root
+regardless of what any Containerfile tries to do. Defense in depth, where every
+layer is a manifest in this repo — so removing one is a reviewable diff, not a
+firewall rule someone forgot.
+
+**1. Route — IP allowlist + edge TLS.** A public conflict dashboard usually
+shouldn't be genuinely public. Rather than stand up an auth proxy, restrict the
+Route to known CIDRs and let the router terminate TLS:
+
+```bash
+oc annotate route/worldmonitor \
+  haproxy.router.openshift.io/ip_whitelist="203.0.113.0/24 198.51.100.7"
+```
+
+Space-separated CIDRs or bare IPs. On the Developer Sandbox this is the cleanest
+way to keep the dashboard reachable only from where you want it.
+
+**2. Restricted SCC — non-root, enforced.** Both images already declare `USER
+1001` and the arbitrary-UID `chgrp -R 0 && chmod -R g=u` pattern. On a plain VM
+nothing makes an image honor that. OpenShift's `restricted-v2` SCC assigns an
+arbitrary UID in group 0, drops all Linux capabilities, and rejects any
+container that tries to run as root. The CI smoke test asserts `USER 1001` on
+every build, so the non-root claim is verified rather than assumed — which is
+the honest version of the guarantee.
+
+**3. Secrets — RBAC-scoped, never in the image.** `apikeys`, `redis`, and
+`relay` are Secret objects mounted into the pods, not baked into a layer or
+committed to a compose file. A workload reads only the Secrets its service
+account is bound to.
+
+**4. Self-healing workloads.** A crashed pod is rescheduled and re-probed
+against its readiness gate, and rollouts are declarative — the running state
+converges to what the manifests say rather than to whatever a `docker restart`
+left behind. (See the Redis REST proxy story below for a case where a readiness
+race looked exactly like a credential failure until the platform's own restart
+behavior surfaced it.)
 
 ---
 
@@ -225,15 +291,20 @@ shutdown. The shell stays PID 1 for correct signal handling.
 
 Nightly at 07:00 UTC (02:00 CDT), plus on push and manual dispatch:
 
-- Resolves one upstream SHA for the whole run, so amd64 and arm64 build
-  identical source
-- Builds both arches, smoke-tests amd64 (health endpoint, SPA fallback,
-  non-root UID), assembles a manifest list
-- Syft SBOM + Grype scan, `--fail-on critical` only, results in the run summary
-- Builds the relay image the same way (`build-relay` job,
-  `Containerfile.ubi10-relay`)
-- Pushes both `<sha>` and `latest` to `quay.io/ryan_nix/worldmonitor-openshift`
-  and `quay.io/ryan_nix/worldmonitor-ais-relay`
+- Resolves one upstream SHA for the whole run, so every arch and image builds
+  from identical source
+- Builds three images, each on both arches, and assembles a manifest list per
+  image:
+  - the app (`build`, `Containerfile.ubi10`) — smoke test hits the health
+    endpoint, the SPA fallback, and asserts non-root UID
+  - the relay (`build-relay`, `Containerfile.ubi10-relay`)
+  - the Redis REST proxy (`build-redis-rest`, `Containerfile.redis-rest`) —
+    smoke test writes via POST and reads back via path-style GET, the exact call
+    hiett's SRH 404s on, plus an unauthenticated-request check
+- Syft SBOM + Grype scan per image, published to the run summary and retained as
+  an artifact. No severity gate — the scan reports, it doesn't block (see below)
+- Pushes `<sha>`, `relay-<sha>`, `redis-rest-<sha>` and their `latest` tags to
+  `quay.io/ryan_nix/worldmonitor-openshift`
 
 `upstream-sync.yml` opens a bump PR every Monday, since upstream ships from
 `main` and stopped tagging ~5 months ago. It flags changes to build-relevant
