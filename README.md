@@ -9,8 +9,6 @@
   <img src="https://img.shields.io/badge/platform-OpenShift-EE0000?logo=redhatopenshift&logoColor=white" alt="OpenShift">
   <img src="https://img.shields.io/badge/arch-amd64%20%7C%20arm64-2dd4bf" alt="Multi-arch">
   <img src="https://img.shields.io/badge/SBOM-SPDX-2dd4bf" alt="SBOM SPDX">
-  <img src="https://img.shields.io/badge/scan-Grype-blueviolet" alt="Grype scanned">
-  <img src="https://img.shields.io/badge/license-AGPL--3.0-informational" alt="AGPL-3.0">
 </p>
 
 # World Monitor on OpenShift
@@ -33,7 +31,7 @@ repo is about running that second thing, well, on infrastructure you control.
 at Vercel and Railway. This repo rebuilds it the way you'd run it in an
 enterprise — on Red Hat's UBI 10 base images, hardened for OpenShift's
 `restricted-v2` security context, built by a multi-arch CI pipeline that
-generates SBOMs and gates on vulnerabilities, and deployed through Kustomize
+generates SPDX SBOMs and scans every build, and deployed through Kustomize
 overlays with one command.
 
 So there are two halves:
@@ -302,7 +300,7 @@ Nightly at 07:00 UTC (02:00 CDT), plus on push and manual dispatch:
     smoke test writes via POST and reads back via path-style GET, the exact call
     hiett's SRH 404s on, plus an unauthenticated-request check
 - Syft SBOM + Grype scan per image, published to the run summary and retained as
-  an artifact. No severity gate — the scan reports, it doesn't block (see below)
+  an artifact. No severity gate — the scan reports, it doesn't block
 - Pushes `<sha>`, `relay-<sha>`, `redis-rest-<sha>` and their `latest` tags to
   `quay.io/ryan_nix/worldmonitor-openshift`
 
