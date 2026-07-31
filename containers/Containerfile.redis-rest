@@ -1,0 +1,72 @@
+# =============================================================================
+# World Monitor — Redis REST proxy (OpenShift build)
+#
+# Upstream ships docker/Dockerfile.redis-rest on node:24-alpine, which runs as
+# root and will not start under OpenShift's restricted SCC. This rebuilds the
+# same proxy on UBI 10 with the arbitrary-UID ownership pattern.
+#
+# Why this image instead of hiett/serverless-redis-http:
+#   The app's readCachedJson() issues path-style GETs (GET /get/<key>). hiett's
+#   SRH implements only the POST command forms, so every cache read returns
+#   404 and the handler swallows it as an empty result — panels render as
+#   "Temporarily unavailable" with no error anywhere in the logs.
+#   Upstream's proxy handles GET /{cmd}/{args...}, POST /, POST /pipeline and
+#   POST /multi-exec, which is the full set the app uses.
+#
+# Env (unchanged from the SRH deployment):
+#   SRH_CONNECTION_STRING  redis://:<password>@redis:6379
+#   SRH_TOKEN              bearer token (== REDIS_TOKEN)
+#   PORT                   listen port. Upstream defaults to 80; set 8080 here
+#                          because the Service targets 8080 and a non-root
+#                          process cannot bind 80.
+# =============================================================================
+
+FROM registry.access.redhat.com/ubi10/nodejs-22:latest AS builder
+
+USER root
+WORKDIR /build
+
+ENV CI=true
+
+# Upstream pins redis@4. Keep that pin — the proxy uses the v4 createClient
+# API, and redis@5 changed connection semantics.
+RUN npm init -y >/dev/null 2>&1 && \
+    npm install --omit=dev redis@4
+
+# -----------------------------------------------------------------------------
+# Runtime
+# -----------------------------------------------------------------------------
+FROM registry.access.redhat.com/ubi10/nodejs-22:latest AS runtime
+
+LABEL name="worldmonitor-redis-rest" \
+      summary="Upstash-compatible Redis REST proxy for World Monitor on OpenShift" \
+      description="Translates REST URL paths to Redis commands. Replaces hiett/serverless-redis-http, which lacks path-style GET support." \
+      io.k8s.display-name="World Monitor Redis REST" \
+      io.openshift.expose-services="8080:http" \
+      io.openshift.tags="redis,cache,nodejs,ubi10"
+
+USER root
+WORKDIR /app
+
+COPY --from=builder --chown=1001:0 /build/node_modules /app/node_modules
+COPY --from=builder --chown=1001:0 /build/package.json /app/package.json
+
+# The proxy itself comes from the upstream checkout at docker/redis-rest-proxy.mjs.
+# The build context must therefore be the upstream repo root (same context the
+# app and relay builds already use), not this repo.
+COPY --chown=1001:0 docker/redis-rest-proxy.mjs /app/redis-rest-proxy.mjs
+
+# Arbitrary-UID support: OpenShift assigns a random UID in group 0, so group
+# permissions must mirror owner permissions.
+RUN chgrp -R 0 /app && chmod -R g=u /app
+
+# 8080 rather than upstream's 80 — a non-root UID cannot bind a privileged
+# port, and the existing Service already targets 8080.
+ENV PORT=8080 \
+    NODE_ENV=production
+
+EXPOSE 8080
+
+USER 1001
+
+CMD ["node", "/app/redis-rest-proxy.mjs"]

@@ -359,8 +359,168 @@ jobs:
           podman push "localhost/${RELAY_IMAGE}:${{ matrix.arch }}" \
             "${DEST}:relay-${{ needs.resolve.outputs.short }}-${{ matrix.arch }}"
 
+
+  # The Redis REST proxy. Third image in the same Quay repo, redis-rest- tag
+  # prefix.
+  #
+  # Why this exists: the deployment previously ran hiett/serverless-redis-http,
+  # which implements only the POST command forms of the Upstash REST API. The
+  # app's readCachedJson() issues path-style GETs (GET /get/<key>), so every
+  # cache read returned 404. The handlers swallow that as an empty result, so
+  # panels rendered "Temporarily unavailable" with no error surfaced anywhere.
+  # Upstream ships docker/redis-rest-proxy.mjs which handles GET /{cmd}/{args},
+  # POST /, POST /pipeline and POST /multi-exec — the full set the app uses.
+  # containers/Containerfile.redis-rest rebuilds it on UBI 10 for restricted SCC.
+  build-redis-rest:
+    needs: resolve
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    env:
+      PROXY_IMAGE: worldmonitor-redis-rest        # local build tag
+      IMAGE_NAME: worldmonitor-openshift          # shared Quay repo (push dest)
+    steps:
+      - uses: actions/checkout@v4
+
+      # Unlike the app and relay, this image's source file lives in the
+      # UPSTREAM tree (docker/redis-rest-proxy.mjs), not this repo. Only the
+      # Containerfile is copied across.
+      - name: Fetch upstream at pinned SHA
+        run: |
+          set -euo pipefail
+          REPO="$GITHUB_WORKSPACE"
+          [ -f "$REPO/containers/Containerfile.redis-rest" ] \
+            || { echo "::error::missing containers/Containerfile.redis-rest"; exit 1; }
+          git clone --filter=blob:none --no-checkout \
+            "https://github.com/${UPSTREAM_REPO}.git" "$RUNNER_TEMP/upstream"
+          git -C "$RUNNER_TEMP/upstream" checkout --detach "${{ needs.resolve.outputs.sha }}"
+          # Assert the upstream file the Containerfile COPYs actually exists at
+          # this SHA — a rename upstream would otherwise surface as an opaque
+          # buildah COPY failure.
+          [ -f "$RUNNER_TEMP/upstream/docker/redis-rest-proxy.mjs" ] \
+            || { echo "::error::upstream docker/redis-rest-proxy.mjs not found at this SHA"; exit 1; }
+          mkdir -p "$RUNNER_TEMP/upstream/containers"
+          cp "$REPO/containers/Containerfile.redis-rest" \
+             "$RUNNER_TEMP/upstream/containers/"
+
+      - name: Build
+        run: |
+          cd "$RUNNER_TEMP/upstream"
+          set -euo pipefail
+          podman build \
+            --platform "linux/${{ matrix.arch }}" \
+            --build-arg VERSION="${{ needs.resolve.outputs.short }}" \
+            --build-arg VCS_REF="${{ needs.resolve.outputs.sha }}" \
+            --build-arg BUILD_DATE="${{ needs.resolve.outputs.date }}" \
+            -f containers/Containerfile.redis-rest \
+            -t "localhost/${PROXY_IMAGE}:${{ matrix.arch }}" \
+            .
+
+      # Full round-trip against a real Redis. This is deliberately not a
+      # "does the process start" test: the bug this image fixes was that
+      # path-style GET returned 404 while every other form worked, so the
+      # smoke test asserts exactly that path.
+      - name: Smoke test
+        if: matrix.arch == 'amd64'
+        run: |
+          set -euo pipefail
+          PW="smoke-$(openssl rand -hex 8)"
+          TOKEN="smoke-$(openssl rand -hex 8)"
+
+          podman network create wm-smoke >/dev/null 2>&1 || true
+          podman run -d --name smoke-redis --network wm-smoke \
+            docker.io/redis:7-alpine \
+            redis-server --requirepass "$PW"
+
+          podman run -d --name smoke-proxy --network wm-smoke -p 18080:8080 \
+            -e SRH_CONNECTION_STRING="redis://:${PW}@smoke-redis:6379" \
+            -e SRH_TOKEN="$TOKEN" \
+            -e PORT=8080 \
+            "localhost/${PROXY_IMAGE}:amd64"
+
+          for i in $(seq 1 40); do
+            if curl -fsS -H "Authorization: Bearer ${TOKEN}" \
+                 http://127.0.0.1:18080/ >/dev/null 2>&1; then
+              echo "proxy responding after ${i}s"; break
+            fi
+            [ "$i" = 40 ] && { echo "::error::proxy never came up"; podman logs smoke-proxy; exit 1; }
+            sleep 1
+          done
+
+          # Write via POST path form (what setCachedJson uses)...
+          curl -fsS -X POST -H "Authorization: Bearer ${TOKEN}" \
+            http://127.0.0.1:18080/set/smoke:key:v1/hello >/dev/null
+
+          # ...and read back via path-style GET (what readCachedJson uses, and
+          # what hiett's SRH 404s on).
+          OUT="$(curl -fsS -H "Authorization: Bearer ${TOKEN}" \
+            "http://127.0.0.1:18080/get/smoke%3Akey%3Av1")"
+          echo "GET returned: ${OUT}"
+          echo "$OUT" | grep -q '"result":"hello"' \
+            || { echo "::error::path-style GET did not round-trip"; podman logs smoke-proxy; exit 1; }
+
+          # Auth must actually be enforced — a proxy that ignores SRH_TOKEN
+          # would pass every test above while leaving the cache open.
+          CODE="$(curl -s -o /dev/null -w '%{http_code}' \
+            "http://127.0.0.1:18080/get/smoke%3Akey%3Av1")"
+          [ "$CODE" = "401" ] || [ "$CODE" = "403" ] \
+            || { echo "::error::unauthenticated GET returned ${CODE}, expected 401/403"; exit 1; }
+
+          UID_IN_IMAGE="$(podman inspect localhost/${PROXY_IMAGE}:amd64 --format '{{.Config.User}}')"
+          [ "$UID_IN_IMAGE" = "1001" ] || { echo "::error::expected USER 1001, got '${UID_IN_IMAGE}'"; exit 1; }
+
+          podman rm -f smoke-proxy smoke-redis
+
+      - name: Export, SBOM, scan
+        run: |
+          set -euo pipefail
+          podman save --format oci-archive \
+            -o "redis-rest-${{ matrix.arch }}.tar" \
+            "localhost/${PROXY_IMAGE}:${{ matrix.arch }}"
+          curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh -s -- -b /usr/local/bin
+          curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sh -s -- -b /usr/local/bin
+          syft "oci-archive:redis-rest-${{ matrix.arch }}.tar" \
+            -o "spdx-json=sbom-redis-rest-${{ matrix.arch }}.spdx.json" -o table
+          # Report only — see the note on the app's Scan step.
+          grype "oci-archive:redis-rest-${{ matrix.arch }}.tar" \
+            -o table -o "json=scan-redis-rest-${{ matrix.arch }}.json"
+
+      - name: Scan summary
+        if: always()
+        run: |
+          set -euo pipefail
+          [ -f "scan-redis-rest-${{ matrix.arch }}.json" ] || exit 0
+          python3 ci/scan-summary.py "scan-redis-rest-${{ matrix.arch }}.json" "redis-rest-${{ matrix.arch }}" \
+            >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: security-redis-rest-${{ matrix.arch }}
+          path: |
+            sbom-redis-rest-${{ matrix.arch }}.spdx.json
+            scan-redis-rest-${{ matrix.arch }}.json
+          retention-days: 90
+
+      - name: Push
+        if: github.event_name != 'pull_request'
+        env:
+          QUAY_USER: ${{ secrets.QUAY_USERNAME }}
+          QUAY_PASS: ${{ secrets.QUAY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          echo "$QUAY_PASS" | podman login -u "$QUAY_USER" --password-stdin "${REGISTRY}"
+          DEST="${REGISTRY}/${IMAGE_NS}/${IMAGE_NAME}"
+          podman push "localhost/${PROXY_IMAGE}:${{ matrix.arch }}" \
+            "${DEST}:redis-rest-${{ needs.resolve.outputs.short }}-${{ matrix.arch }}"
+
   manifest:
-    needs: [resolve, build, build-relay]
+    needs: [resolve, build, build-relay, build-redis-rest]
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     env:
@@ -387,6 +547,7 @@ jobs:
           # manifest list is assembled from its two per-arch tags.
           #   app:   <sha>-amd64  + <sha>-arch        -> <sha>,        latest
           #   relay: relay-<sha>-amd64 + ...-arm64    -> relay-<sha>,  relay-latest
+          #   proxy: redis-rest-<sha>-amd64 + ...     -> redis-rest-<sha>, redis-rest-latest
           assemble() {
             local per_arch_prefix="$1" list_a="$2" list_b="$3"
             for TAG in "$list_a" "$list_b"; do
@@ -398,8 +559,9 @@ jobs:
               echo "pushed ${DEST}:${TAG}"
             done
           }
-          assemble "${SHORT}"       "${SHORT}"       "latest"
-          assemble "relay-${SHORT}" "relay-${SHORT}" "relay-latest"
+          assemble "${SHORT}"            "${SHORT}"            "latest"
+          assemble "relay-${SHORT}"      "relay-${SHORT}"      "relay-latest"
+          assemble "redis-rest-${SHORT}" "redis-rest-${SHORT}" "redis-rest-latest"
 
       - name: Summary
         run: |
@@ -409,6 +571,7 @@ jobs:
             echo '```'
             echo "podman pull ${REGISTRY}/${IMAGE_NS}/${IMAGE_NAME}:${{ needs.resolve.outputs.short }}"
             echo "podman pull ${REGISTRY}/${IMAGE_NS}/${IMAGE_NAME}:relay-${{ needs.resolve.outputs.short }}"
+            echo "podman pull ${REGISTRY}/${IMAGE_NS}/${IMAGE_NAME}:redis-rest-${{ needs.resolve.outputs.short }}"
             echo '```'
             echo
             echo "Upstream commit: \`${{ needs.resolve.outputs.sha }}\`"
