@@ -9,6 +9,7 @@
   <img src="https://img.shields.io/badge/platform-OpenShift-EE0000?logo=redhatopenshift&logoColor=white" alt="OpenShift">
   <img src="https://img.shields.io/badge/arch-amd64%20%7C%20arm64-2dd4bf" alt="Multi-arch">
   <img src="https://img.shields.io/badge/SBOM-SPDX-2dd4bf" alt="SBOM SPDX">
+  <img src="https://img.shields.io/badge/scan-Grype-blueviolet" alt="Grype scanned">
   <img src="https://img.shields.io/badge/license-AGPL--3.0-informational" alt="AGPL-3.0">
 </p>
 
@@ -317,44 +318,55 @@ Settle that before this becomes a customer-facing asset.
 
 ## On the CVE story
 
-The pipeline runs `--fail-on critical` and means it. Two things happened worth
-recording, because the *reasoning* matters more than the green checkmark.
+The pipeline scans every image with Syft and Grype and publishes the SBOM and
+findings as build artifacts, but **there is no severity gate**. That is a
+deliberate reversal, and the reasoning is worth recording.
 
-**tar (CVE-2026-59873).** The relay build flagged a CVSS 9.2 in transitively
-pulled `node-tar` 7.5.15 — a decompression/parse DoS. First instinct was to
-force-patch it via an npm `overrides` bump to 7.5.19. That turned out to be the
-wrong call twice over: npm's `overrides` is documented-unreliable for transitive
-deps (it silently failed to apply across two attempts), and more importantly, a
-version bump was solving the wrong problem.
+**Why the gate came out.** The build ran `--fail-on critical` for months without
+incident, then went red overnight on `sqlite-libs` CVE-2026-51302 — Critical,
+inherited from the UBI 10 base, with no fixed version published. Nothing in this
+repo could remediate it. That is the structural problem with a severity gate on
+a base image you do not control: pass/fail becomes a function of what Red Hat
+and NVD publish on a given day rather than of anything in the source tree, and
+the only available response is to write an ignore rule for a finding you cannot
+fix. A pipeline that is red for reasons no one can act on is a pipeline people
+stop reading.
+
+So the scan is now a report. Findings land in the step summary via
+`ci/scan-summary.py` and in the retained `scan-*.json` artifacts. `.grype.yaml`
+was deleted along with the gate — with nothing to suppress, an ignore rule only
+hides a finding from the report you now depend on.
+
+**The tar assessment still stands.** The relay build once flagged CVSS 9.2 in a
+transitively pulled `node-tar` 7.5.15, a decompression/parse DoS. The first
+instinct was an npm `overrides` bump to 7.5.19, which was wrong twice over:
+npm's `overrides` is documented-unreliable for transitive deps and silently
+failed to apply across two attempts, and a version bump was solving the wrong
+problem anyway.
 
 The relay is a network gateway — AIS over WebSocket, OpenSky over REST, Telegram
 over MTProto, RSS/JSON proxying. **It never extracts tar archives.** The
-vulnerable code path is unreachable at runtime. So the honest engineering answer
-isn't to fight npm into bumping a dependency the relay doesn't exploit; it's to
-assess it as **not-affected** and document why. That assessment lives in
-`containers/relay.openvex.json` (an OpenVEX statement) and is applied at scan
-time via `.grype.yaml` using justification `vulnerable_code_not_in_execute_path`.
+vulnerable code path is unreachable at runtime, so the honest answer was to
+assess it as not-affected and write down why, rather than fight npm into bumping
+a dependency the relay does not exploit. That assessment lives in
+`containers/relay.openvex.json` as an OpenVEX statement.
 
-This is a stronger posture than a version bump: it scales (you can't force-patch
-every transitive CVE forever), and it's auditable (the claim and its
-justification are written down, not hidden in a lockfile diff).
-
-Enforcement is a plain-ID ignore rule in `.grype.yaml`
-(`- vulnerability: CVE-2026-59873`), not a `vex-status` rule. A `vex-status:
-not_affected` ignore only fires when Grype has ALSO loaded a matching `--vex`
-document; on its own it is inert and the CVE falls through to `--fail-on`. The
-bare-ID ignore suppresses the match unconditionally, across npm and the rpm
-false-matches on the same ID. `relay.openvex.json` remains the documented
-rationale; `.grype.yaml` does the enforcement.
-
-**The gate stays honest.** `--fail-on critical` is unchanged. The tar exception
-is one documented, justified not-affected assessment — not a lowered bar. Any
-*new* Critical, or one in code the relay actually reaches, still fails the build.
+It is now documentation rather than enforcement. Nothing consumes it at scan
+time — that was `.grype.yaml`'s job, and `.grype.yaml` is gone. The reasoning is
+still the right reasoning and still worth keeping: you cannot force-patch every
+transitive CVE forever, and a written, auditable not-affected claim scales where
+a lockfile diff does not. If a gate ever comes back, the OpenVEX file is what it
+should consume, via `--vex` rather than a bare-ID ignore.
 
 ### Scope caveat
 
 Grype scans OS and package metadata, not reachability. A clean scan means no
-*known* CVEs in the dependency versions present (minus the documented VEX
-exception), not that the application is free of vulnerabilities. For a claim
-about application dependencies specifically, add `npm audit --production`.
+*known* CVEs in the dependency versions present, not that the application is
+free of vulnerabilities. For a claim about application dependencies
+specifically, add `npm audit --production`.
 
+Because there is no gate, someone has to actually read the output. The step
+summary is the intended place; Quay also scans on push, though it uses Clair
+rather than Grype and the counts will not match — different vulnerability
+databases and different matching logic, so compare each tool against itself over
+time rather than against the other.
