@@ -140,19 +140,36 @@ do_reset() {
   esac
 }
 
+do_update() {
+  require_podman
+  bold "Checking for a newer World Monitor build..."
+  info "Pulling the latest images from Quay (this is where nightly builds land)."
+  compose pull
+  echo
+  bold "Restarting onto the updated images..."
+  compose up -d
+  echo
+  ok "Updated and running.  $URL"
+  info "If something looks off after an update, the project is young and still"
+  info "settling — you can keep running the version you had; updates are only"
+  info "pulled when you run ./deploy.sh -update."
+}
+
 # ---- dispatch ---------------------------------------------------------------
 case "${1:-}" in
-  ""|-start|start)   do_start ;;
-  -stop|stop)        do_stop  ;;
-  -reset|reset)      do_reset ;;
+  ""|-start|start)   do_start  ;;
+  -stop|stop)        do_stop   ;;
+  -update|update)    do_update ;;
+  -reset|reset)      do_reset  ;;
   -h|--help|help)
     bold "World Monitor"
     info "./deploy.sh          start it (prompts for keys the first time)"
+    info "./deploy.sh -update  pull the latest build, then restart"
     info "./deploy.sh -stop    stop it"
     info "./deploy.sh -reset   re-enter your keys"
     ;;
   *)
     warn "Don't know '$1'."
-    info "Try:  ./deploy.sh   or   ./deploy.sh -stop"
+    info "Try:  ./deploy.sh   or   ./deploy.sh -update   or   ./deploy.sh -stop"
     exit 1 ;;
 esac
