@@ -332,6 +332,39 @@ fan-out pipelines (`AI_DIGEST_ENABLED`, `BRIEF_COMPOSE_ENABLED`) off. Prepay a
 small OpenRouter balance and enable pipelines one at a time.
 
 
+## Known-empty panels (upstream architecture)
+
+Both deployments (OpenShift and local Podman) will show some panels empty no
+matter how they're configured. These are consequences of upstream's deployment
+architecture, not misconfiguration — documented here so nobody burns an evening
+rediscovering them.
+
+**Live Intelligence** — populated by `seed-gdelt-intel`, one of ~43 standalone
+Railway seed crons upstream runs separately from the app + relay
+(`scripts/railway-services.json` in the upstream repo lists them; their own
+runbook calls them "standalone seed crons, not bundled"). The seeder script is
+self-hostable in principle — it needs only Redis credentials and uses GDELT's
+free DOC API — but GDELT rate-limits per-IP aggressively enough that a
+single-address self-host cannot complete the six-topic sweep before the limit
+trips. It runs fine from upstream's Railway IP space; expect this panel to stay
+empty on a home or single-egress deployment.
+
+**Force Posture and parts of Escalation Monitor** — the app fetches live
+military data through the relay (`WS_RELAY_URL`), but the sidecar's SSRF guard
+blocks private origins and only allowlists `UPSTASH_REDIS_REST_URL`'s origin in
+docker mode. `WS_RELAY_URL`'s origin never gets the same treatment, and the
+allowlist is deliberately env-free (no operator override). Every direct
+relay fetch fails with `SSRF blocked: Hostname resolves to a private/reserved
+IP` — visible only in logs; the UI just shows the panels empty or stuck on
+"Connecting to ADS-B". AI Strategic Posture still populates because the relay's
+own theater-posture seed loop writes to Redis, bypassing the blocked path. The
+fix is a one-line upstream change (allowlist `WS_RELAY_URL`'s origin alongside
+the Upstash one); until it lands, these panels are partial on any
+self-hosted deployment.
+
+**Security Advisories** — another standalone Railway seeder; same category as
+Live Intelligence.
+
 ## Self-hosting fixes in this repo
 
 Three gaps that stop a self-hosted deployment from working, none of them

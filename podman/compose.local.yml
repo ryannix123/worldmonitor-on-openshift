@@ -5,9 +5,9 @@
 # AI briefs run through OpenRouter (one key). Everything else is self-hosted
 # in these four containers.
 #
-#   Start:  podman compose -f compose.tanner.yml up -d
+#   Start:  podman compose -f compose.local.yml up -d
 #   Open:   http://localhost:3000
-#   Stop:   podman compose -f compose.tanner.yml down
+#   Stop:   podman compose -f compose.local.yml down
 #
 # Reads secrets from a file named .env in this same directory.
 # =============================================================================
@@ -62,6 +62,16 @@ services:
       UPSTASH_ALLOW_INSECURE_HTTP: "true"
       LOCAL_API_MODE: "docker"
       LOCAL_API_CLOUD_FALLBACK: "false"
+      # --- Relay connection -------------------------------------------------
+      # The app reaches live ADS-B / AIS streams THROUGH the relay. Without
+      # WS_RELAY_URL the app never finds it and everything downstream of live
+      # military data sits empty: Force Posture, AI Strategic Posture (stuck
+      # "Connecting to ADS-B"), Escalation Monitor, Military Activity. The
+      # relay's routes are auth-gated, so the app must also present the same
+      # RELAY_SHARED_SECRET the relay was started with. Mirrors upstream's
+      # docker-compose.yml wiring.
+      WS_RELAY_URL: "http://ais-relay:3004"
+      RELAY_SHARED_SECRET: "${RELAY_SHARED_SECRET}"
       # --- Browser session auth --------------------------------------------
       # Without these the app can't issue a wm-session cookie, so key-gated
       # endpoints (risk scores, theater posture, Country Instability, AI
