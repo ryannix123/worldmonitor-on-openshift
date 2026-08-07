@@ -53,10 +53,16 @@ running on images you built, scanned, and can audit end to end.
 **Two targets, one image.** The same UBI 10 images run two ways. Reach for
 **OpenShift** when you want the platform to *enforce* the security posture — SCC,
 RBAC-scoped Secrets, IP-allowlisted Routes, self-healing workloads — and
-**Podman** (Apple Silicon) when you want the lightest path to a running instance
-on a single machine, no cluster required. The OpenShift section below argues for
-the enforced posture; the Podman path trades that enforcement for a two-command
-start on a laptop. Same app, you pick the amount of platform.
+**Podman** when you want the lightest path to a running instance on a single
+machine, no cluster required. The OpenShift section below argues for the enforced
+posture; the Podman path trades that enforcement for a two-command start on a
+laptop. Same app, you pick the amount of platform.
+
+> **On the image name.** This project started as OpenShift-only, so the images
+> live at `quay.io/ryan_nix/worldmonitor-openshift`. The local Podman path was
+> added later and pulls those same images — the `-openshift` in the name is
+> historical, not a constraint. Keeping the name stable means every overlay and
+> compose reference keeps working; renaming it would buy nothing but churn.
 
 ## Engineering highlights
 
@@ -199,7 +205,7 @@ overlays/
   sandbox-quay/      Developer Sandbox, pulls the prebuilt Quay image
   sno/               Single Node OpenShift, GPU Ollama for local LLM
 deploy.sh            One-shot deploy: ./deploy.sh -o <overlay> -E OPENROUTER_API_KEY
-podman/              Apple Silicon local-run path
+podman/              Local Podman path (arm64 prebuilt; x86 with a compose edit)
 ```
 
 ## Two ways to get the image onto a cluster
@@ -223,26 +229,33 @@ in ~5 minutes. Useful on SNO or when you want everything self-contained.
 form, or omit both to deploy without AI features. See `overlays/*/README.md` for
 per-target detail.
 
-## Local Podman (Apple Silicon)
+## Local Podman
 
 No cluster, no `oc`, no Kustomize — the lightest path to a running instance on a
-Mac. This runs the same UBI 10 images as the OpenShift path, without the SCC /
-RBAC / Route enforcement layer; you get the app, not the enforced posture. Good
-for a demo on a laptop, offline tinkering, or seeing the dashboard before
-standing up a cluster.
-
-> **Apple Silicon only.** This path targets arm64 Macs. For x86 or a RHEL host,
-> use the OpenShift path (Developer Sandbox is free and needs no local install).
+single machine. This runs the same UBI 10 images as the OpenShift path, without
+the SCC / RBAC / Route enforcement layer; you get the app, not the enforced
+posture. Good for a demo on a laptop, offline tinkering, or seeing the dashboard
+before standing up a cluster. Rootless by default, and the images already assume
+non-root (UID 1001), so local behavior matches what the cluster enforces.
 
 ```bash
 git clone https://github.com/ryannix123/worldmonitor-redhat.git
 cd worldmonitor-redhat/podman
-# <fill in the actual run command from podman/README.md>
+./deploy.sh
 ```
 
-Open <http://localhost:3000>. See `podman/README.md` for the data-source keys and
-teardown. The same `OPENROUTER_API_KEY` and data-source keys documented below
-apply here too.
+First run prompts for API keys (only `OPENROUTER_API_KEY` is needed for AI
+briefs; the rest are optional), writes a `.env`, and starts four containers.
+Open <http://localhost:3000> — the map loads immediately, the conflict and market
+panels fill in over 2–3 minutes as the feeds catch up.
+
+> **Apple Silicon by default.** Images are pulled prebuilt for arm64 and the
+> compose file pins `platform: linux/arm64`. On Intel/AMD, remove those `platform:`
+> lines (or set them to `linux/amd64`) and it runs natively — the images are
+> multi-arch.
+
+See **[README-podman-local.md](./README-podman-local.md)** for everyday commands
+(`-stop`, `-reset`), the full key table, and troubleshooting.
 
 ## Data source API keys
 
