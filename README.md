@@ -260,24 +260,52 @@ See **[README-podman-local.md](./README-podman-local.md)** for everyday commands
 ## Data source API keys
 
 Every key is optional and every panel degrades gracefully without one. Pass
-them at deploy time with `-E KEY` (prompts, no echo) or `-e KEY=VALUE`:
+them at deploy time with `-E KEY` (prompts, no echo) or `-e KEY=VALUE` (inline,
+for non-secret values like an email):
 
 ```bash
 ./deploy.sh -o overlays/sandbox-quay \
-  -E OPENROUTER_API_KEY \
+  -e ACLED_EMAIL=you@example.com \
+  -E ACLED_PASSWORD \
   -E AISSTREAM_API_KEY \
+  -E FINNHUB_API_KEY \
+  -E OPENROUTER_API_KEY \
   -E UCDP_ACCESS_TOKEN
 ```
+
+Where to get each (all free tiers):
+
+| Key | Powers | Free tier | Get it at |
+|---|---|---|---|
+| `OPENROUTER_API_KEY` | AI briefs (route to Claude) | 50 req/day | <https://openrouter.ai/keys> |
+| `FINNHUB_API_KEY` | Stock quotes, market data | 60 req/min | <https://finnhub.io/register> |
+| `UCDP_ACCESS_TOKEN` | Armed-conflict events + CII floor | 5,000 req/day | free token — <https://ucdp.uu.se/apidocs/> |
+| `ACLED_EMAIL` / `ACLED_PASSWORD` | Second conflict source | free for researchers | <https://acleddata.com/register/> |
+| `AISSTREAM_API_KEY` | Live vessel positions | free | <https://aisstream.io/apikeys> |
 
 They land in `overlays/<target>/secrets/apikeys.env`, which is gitignored and
 becomes the `worldmonitor-apikeys` Secret. Both the app and the relay mount it
 via `envFrom`, so a key added here reaches whichever process needs it.
 
+### Finnhub — stock quotes & market data
+
+`FINNHUB_API_KEY` feeds the market panels — real-time stock quotes and the
+finance composite. The free tier allows 60 requests per minute, which is
+comfortable for the seed cadence. Register at <https://finnhub.io/register>; the
+key is shown on the dashboard immediately after signup, no approval wait.
+
+> Upstream is [evaluating a move](https://github.com/koala73/worldmonitor/issues/2055)
+> to Alpha Vantage as the primary market source, with Finnhub kept as a fallback.
+> Finnhub is current today; watch that issue if the market panels change behavior
+> after an upstream sync.
+
 ### UCDP — armed conflict events
 
 `UCDP_ACCESS_TOKEN` feeds the ARMED CONFLICT EVENTS panel and the conflict floor
 in the Country Instability Index. Without it that panel sits at zero and CII
-reports `degraded`.
+reports `degraded`. The conflict family in CII's health-coverage signal is
+satisfied by either UCDP or ACLED, so running one source keeps coverage green;
+running both adds cross-validation, not a hard requirement.
 
 The Uppsala Conflict Data Program publishes a free REST API at
 `ucdpapi.pcr.uu.se`, documented at <https://ucdp.uu.se/apidocs/>. Anonymous
@@ -287,6 +315,16 @@ a handful of seed cycles will exhaust the daily quota. A free access token
 lifts both the paging requirement and the download limit, which is what you
 want for anything that re-seeds on a loop. Request one from the API maintainer
 (`ucdp@pcr.uu.se`); the apidocs page has the current process.
+
+What the token buys you is *reliable seeding*, not a deeper history window. The
+token removes the API-side paging and quota limits, but the relay retains at
+most 2,000 mapped events from a ~365-day trailing slice (the seed fetches the
+newest few pages, not the full dataset). CII classifies conflict per country
+over a nominal 2-year window, but live scoring is bounded by that ~1-year
+retention slice — so the token keeps the panel fed and current, rather than
+extending how far back the conflict floor can see. If you need a longer window,
+that's a relay retention change (page depth + Redis payload size), not a
+token-tier change.
 
 UCDP sends the token as an `x-ucdp-access-token` header rather than a bearer
 token. The relay handles that — `scripts/ais-relay.cjs` reads
@@ -307,9 +345,12 @@ landed — a `redis: FAIL` there points at the cache proxy, not at UCDP.
 ### ACLED — conflict events (second source)
 
 `ACLED_EMAIL` and `ACLED_PASSWORD` cover the same panel family from a different
-source. ACLED registration is at <https://acleddata.com/>. Note that ACLED has
-moved auth models more than once; if the relay logs `ACLED API error: 403`,
-check whether your account now needs an API key rather than email and password.
+source, and either UCDP or ACLED satisfies CII's conflict-coverage health check
+on its own — so ACLED is a valid primary if you'd rather not run UCDP, not only
+a redundant second feed. ACLED registration is at <https://acleddata.com/>. Note
+that ACLED has moved auth models more than once; if the relay logs
+`ACLED API error: 403`, check whether your account now needs an API key rather
+than email and password.
 
 ## The image
 
