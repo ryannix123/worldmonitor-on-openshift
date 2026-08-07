@@ -117,7 +117,7 @@ jobs:
         run: |
           cd "$RUNNER_TEMP/upstream"
           set -euo pipefail
-          podman build \
+          podman build --runtime runc \
             --platform "linux/${{ matrix.arch }}" \
             --build-arg VERSION="${{ needs.resolve.outputs.short }}" \
             --build-arg VCS_REF="${{ needs.resolve.outputs.sha }}" \
@@ -256,7 +256,7 @@ jobs:
         run: |
           cd "$RUNNER_TEMP/upstream"
           set -euo pipefail
-          podman build \
+          podman build --runtime runc \
             --platform "linux/${{ matrix.arch }}" \
             --build-arg VERSION="${{ needs.resolve.outputs.short }}" \
             --build-arg VCS_REF="${{ needs.resolve.outputs.sha }}" \
@@ -413,7 +413,7 @@ jobs:
         run: |
           cd "$RUNNER_TEMP/upstream"
           set -euo pipefail
-          podman build \
+          podman build --runtime runc \
             --platform "linux/${{ matrix.arch }}" \
             --build-arg VERSION="${{ needs.resolve.outputs.short }}" \
             --build-arg VCS_REF="${{ needs.resolve.outputs.sha }}" \
