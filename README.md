@@ -142,7 +142,7 @@ behavior surfaced it.)
 
 ## 🆓 Red Hat Developer Sandbox
 
-The [Red Hat Developer Sandbox](https://developers.redhat.com/developer-sandbox) is a **free** OpenShift environment perfect for testing Nextcloud:
+The [Red Hat Developer Sandbox](https://developers.redhat.com/developer-sandbox) is a **free** OpenShift environment perfect for testing World Monitor:
 
 - **Free tier** — No credit card required, no setup, no cluster to install
 - **Generous resources** — 3 CPU cores, 14 GB RAM, and 40 GB storage per user — plenty to run this entire stack
