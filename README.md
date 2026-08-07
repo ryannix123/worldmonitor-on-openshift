@@ -1,17 +1,19 @@
 <p align="center">
-  <img src="docs/assets/banner.svg" alt="World Monitor on OpenShift" width="100%">
+  <img src="docs/assets/banner.svg" alt="World Monitor on OpenShift or Podman" width="100%">
 </p>
 
 <p align="center">
-  <a href="https://github.com/ryannix123/worldmonitor-on-openshift/actions/workflows/build.yml">
-    <img src="https://github.com/ryannix123/worldmonitor-on-openshift/actions/workflows/build.yml/badge.svg" alt="Build status"></a>
+  <a href="https://github.com/ryannix123/worldmonitor-redhat/actions/workflows/build.yml">
+    <img src="https://github.com/ryannix123/worldmonitor-redhat/actions/workflows/build.yml/badge.svg" alt="Build status"></a>
   <img src="https://img.shields.io/badge/base-UBI%2010-EE0000?logo=redhat&logoColor=white" alt="UBI 10">
   <img src="https://img.shields.io/badge/platform-OpenShift-EE0000?logo=redhatopenshift&logoColor=white" alt="OpenShift">
+  <img src="https://img.shields.io/badge/local-Podman-892CA0?logo=podman&logoColor=white" alt="Podman">
   <img src="https://img.shields.io/badge/arch-amd64%20%7C%20arm64-2dd4bf" alt="Multi-arch">
   <img src="https://img.shields.io/badge/SBOM-SPDX-2dd4bf" alt="SBOM SPDX">
+  <img src="https://img.shields.io/badge/license-AGPL--3.0-informational" alt="AGPL-3.0">
 </p>
 
-# World Monitor on OpenShift
+# World Monitor on OpenShift or Podman
 
 Run a live, real-time global intelligence platform on your own cluster —
 built on Red Hat UBI, published through a security-scanned pipeline, and
@@ -37,8 +39,9 @@ overlays with one command.
 So there are two halves:
 
 1. **Build** — a nightly multi-arch (amd64 + arm64) pipeline that rebuilds both
-   the app and its data relay on UBI 10, generates SPDX SBOMs, scans with Grype,
-   fails the build on Critical CVEs, and publishes to Quay.
+   the app and its data relay on UBI 10, generates SPDX SBOMs, scans every build
+   with Grype (published to the run summary and retained as an artifact), and
+   publishes to Quay.
 2. **Deploy** — Kustomize overlays for OpenShift Developer Sandbox (free tier),
    Single Node OpenShift with a GPU for local LLM inference, or plain Podman on
    a laptop. One script, namespace-portable, with a teardown path.
@@ -46,6 +49,14 @@ So there are two halves:
 The result: the same live intelligence platform — vessels moving on the map,
 chokepoint flows, conflict zones, market data, all seeding through Redis — but
 running on images you built, scanned, and can audit end to end.
+
+**Two targets, one image.** The same UBI 10 images run two ways. Reach for
+**OpenShift** when you want the platform to *enforce* the security posture — SCC,
+RBAC-scoped Secrets, IP-allowlisted Routes, self-healing workloads — and
+**Podman** (Apple Silicon) when you want the lightest path to a running instance
+on a single machine, no cluster required. The OpenShift section below argues for
+the enforced posture; the Podman path trades that enforcement for a two-command
+start on a laptop. Same app, you pick the amount of platform.
 
 ## Engineering highlights
 
@@ -149,7 +160,7 @@ The [Red Hat Developer Sandbox](https://developers.redhat.com/developer-sandbox)
 - **Latest OpenShift** — Always running a recent version (4.18+)
 - **Auto-hibernation** — Deployments scale to zero after 12 hours of inactivity
 
-> 💡 **New to OpenShift?** The Sandbox is the fastest way to try the platform — you get a real, current OpenShift cluster in your browser in minutes, with zero install. This entire Nextcloud stack is designed to deploy there on the free tier. [Grab a free Sandbox](https://developers.redhat.com/developer-sandbox) and run `sh deploy.sh`.
+> 💡 **New to OpenShift?** The Sandbox is the fastest way to try the platform — you get a real, current OpenShift cluster in your browser in minutes, with zero install. This entire World Monitor stack is designed to deploy there on the free tier. [Grab a free Sandbox](https://developers.redhat.com/developer-sandbox) and run `sh deploy.sh`.
 
 Confirm your own namespace's quota at any time:
 
@@ -211,6 +222,27 @@ in ~5 minutes. Useful on SNO or when you want everything self-contained.
 `-E` prompts for the key without echoing. Use `-e KEY=VALUE` for the inline
 form, or omit both to deploy without AI features. See `overlays/*/README.md` for
 per-target detail.
+
+## Local Podman (Apple Silicon)
+
+No cluster, no `oc`, no Kustomize — the lightest path to a running instance on a
+Mac. This runs the same UBI 10 images as the OpenShift path, without the SCC /
+RBAC / Route enforcement layer; you get the app, not the enforced posture. Good
+for a demo on a laptop, offline tinkering, or seeing the dashboard before
+standing up a cluster.
+
+> **Apple Silicon only.** This path targets arm64 Macs. For x86 or a RHEL host,
+> use the OpenShift path (Developer Sandbox is free and needs no local install).
+
+```bash
+git clone https://github.com/ryannix123/worldmonitor-redhat.git
+cd worldmonitor-redhat/podman
+# <fill in the actual run command from podman/README.md>
+```
+
+Open <http://localhost:3000>. See `podman/README.md` for the data-source keys and
+teardown. The same `OPENROUTER_API_KEY` and data-source keys documented below
+apply here too.
 
 ## Data source API keys
 

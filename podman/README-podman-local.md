@@ -8,8 +8,9 @@ This is the local path for anyone who'd rather run containers with **Podman**
 than Docker. If you're deploying to OpenShift instead, see the main
 [README](./README.md).
 
-> **Apple Silicon (M-series Macs).** The images are pulled prebuilt for arm64.
-> On Intel/AMD, see the note at the end.
+> **Arm64 by default.** On Apple Silicon (M-series Macs) the prebuilt images
+> pull and run with no changes. On Intel/AMD it's a one-line compose edit — see
+> [Intel / AMD](#intel--amd-x86-64) at the end.
 
 ---
 
