@@ -13,7 +13,7 @@ metadata:
     app.openshift.io/runtime: nodejs
   annotations:
     # Makes the topology node link to the source repo.
-    app.openshift.io/vcs-uri: https://github.com/ryannix123/worldmonitor-on-openshift
+    app.openshift.io/vcs-uri: https://github.com/ryannix123/worldmonitor-redhat
     # Same pattern as the openemr-on-openshift deployment. Note that Red Hat's
     # Topology docs only document the predefined icon set matched via the
     # runtime label — custom-icon is not in them, so treat it as best-effort:

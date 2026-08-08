@@ -98,4 +98,15 @@ spec:
   ports:
     - name: http
       port: 80
-      targetPort: http
+      # Literal 8080, NOT the name "http": a named targetPort is not
+      # re-resolved when only the container's port value changes on an
+      # existing Service. This manifest is self-consistent (containerPort
+      # "http" = 8080), but if the container port was ever a different value
+      # in a prior revision, `oc apply` on an unchanged `targetPort: http`
+      # string is a no-op and the running Service keeps resolving to the OLD
+      # value. That happened here: the live Service stayed mapped to :80 after
+      # the container moved to 8080, every relay Redis write failed with
+      # ECONNREFUSED 172.30.x.x:80, and all cache-backed panels rendered empty
+      # with no error in the app logs. Pinning the literal removes the
+      # name-resolution dependency so a redeploy can never silently revert.
+      targetPort: 8080
