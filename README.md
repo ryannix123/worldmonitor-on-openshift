@@ -451,6 +451,22 @@ self-hosted deployment.
 **Security Advisories** — another standalone Railway seeder; same category as
 Live Intelligence.
 
+**Consumer Prices** — the authoritative writer is upstream's separate
+`consumer-prices-core` microservice (a scrape → aggregate → publish pipeline),
+which isn't part of this image. The bundled `seed-consumer-prices.mjs` is only a
+manual fallback: it hard-requires a `--force` flag (a deliberate guard so it
+can't stomp `consumer-prices-core`'s 26h TTLs with its own 10–60min ones) and
+its own `CONSUMER_PRICES_CORE_BASE_URL` endpoint, which the seed runner doesn't
+even pass through. So this seeder self-aborts under automation — an *expected*
+`FAIL` in the seeder log, not an error — and the panel stays on "Pending data".
+Not fixable with an API key; it needs a service upstream didn't open-source.
+
+**24/7 Positioning (COT) and Liquidity Shifts** — driven by CFTC Commitment-of-
+Traders data, which publishes weekly and computes over accumulated history. The
+panel shows "Building baselines… over the next hour" / "No COT rows available"
+until enough history seeds. On a fresh deploy this can stay sparse for a while;
+it is timing, not misconfiguration.
+
 ## Self-hosting fixes in this repo
 
 Three gaps that stop a self-hosted deployment from working, none of them
@@ -496,3 +512,44 @@ rejects), CI publishes it, and `base/redis-rest.yaml` points at it.
 The first and third are one-line upstream fixes (make the constants
 configurable; use the POST form or document the SRH requirement) and are worth
 upstreaming.
+
+## Troubleshooting: every panel empty, relay logs `ECONNREFUSED …:80`
+
+If the whole dashboard renders empty and `oc logs deploy/ais-relay` shows seed
+lines ending in `redis: FAIL` / `redis: PARTIAL` alongside
+`ECONNREFUSED <redis-rest-clusterIP>:80`, the relay can't reach the Redis REST
+proxy — the seeders fetch fine but can't persist, and every Redis-backed panel
+reads empty.
+
+The cause is a **named-`targetPort` resolution trap** on the `redis-rest`
+Service. The proxy runs as a non-root arbitrary UID and can't bind privileged
+:80, so its container listens on **8080** (`PORT=8080`, `containerPort: 8080`).
+The Service must forward to that. `base/redis-rest.yaml` therefore pins the
+literal:
+
+```yaml
+ports:
+  - name: http
+    port: 80
+    targetPort: 8080   # literal, NOT the name "http"
+```
+
+Why literal and not `targetPort: http`: a *named* targetPort is resolved once
+and is **not** re-resolved when only the container's port value changes on an
+already-existing Service. If an earlier revision had the container on :80 and a
+later one moved it to :8080, `oc apply` on the unchanged `targetPort: http`
+string is a no-op — the live Service keeps its stale :80 mapping, and every
+relay write dies with `ECONNREFUSED …:80`. The symptom is indistinguishable from
+missing API keys or slow seeding, which is what makes it eat an afternoon.
+
+If you hit a stale live Service (endpoints show `:8080` but the Service still
+targets `:80`), force the correction once:
+
+```bash
+oc patch svc redis-rest --type='json' \
+  -p='[{"op":"replace","path":"/spec/ports/0/targetPort","value":8080}]'
+```
+
+Then confirm `oc get endpoints redis-rest` reads `…:8080` and watch the relay's
+`redis:` lines flip to `OK`. The manifest already carries the literal, so a
+clean deploy never hits this — it only bites when mutating an existing Service.
